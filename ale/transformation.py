@@ -138,9 +138,123 @@ class FrameChain(nx.DiGraph):
             frame_chain.add_edge(rotation=rotation)
 
         return frame_chain
+    
+
+    @staticmethod
+    def resolve_parent_frame_matrix(frame_code, ephemeris_time):
+        center, frame_type, frame_type_id = spice.frinfo(frame_code)            
+
+        if frame_type == 1 or frame_type == 2:
+            frame_code = 1
+            matrix = np.eye(3)
+
+        elif frame_type == 3:
+            try:
+                matrix, frame_code = spice.ckfrot(frame_type_id, ephemeris_time)
+            except:
+                raise Exception(f"The ck rotation from frame {frame_code} can not " +
+                                f"be found due to no pointing available at requested time {ephemeris_time} " +
+                                    "or a problem with the frame")
+        elif frame_type == 4:
+            try:
+                matrix, frame_code = spice.tkfram(frame_type_id)
+            except:
+                raise Exception(f"The tk rotation from frame {frame_code} can not " +
+                                    "be found")
+        elif frame_type == 5:
+            matrix, frame_code = spice.zzdynrot(frame_type_id, center, ephemeris_time)
+
+        elif frame_type == 6:
+            print(f'Frame {frame_code} is a switch frame. Trying to detect the right underlaying kernel')
+            frames = spice.gcpool(f'FRAME_{frame_code}_ALIGNED_WITH', 0, 20)
+
+            for fr in frames[::-1]:
+                id = spice.namfrm(fr)
+                center, subframe_type, frame_type_id = spice.frinfo(id)
+
+                print(fr)
+                print(subframe_type)
+                try:
+                    matrix, frame_code, _ = FrameChain.resolve_parent_frame_matrix(id, ephemeris_time)
+                    print(f'Correctly resolved matrix {matrix} for frame of type {frame_code}. Returning')
+                    return np.eye(3), id, frame_type
+                except Exception as e:
+                    print(f'Not found, passing to the next, Exception is  {e}')
+                    continue
+            
+            print('Returning None as I could not determine the right frame for switch kernel')
+            return None, None, None
+
+                
+
+        else:
+            raise Exception(f"The frame {frame_code} has a type {frame_type_id} (frame type {frame_type}) " +
+                                "not supported by your version of Naif Spicelib. " +
+                                "You need to update.")
+        
+        return matrix, frame_code, frame_type
+    
+
 
     @staticmethod
     def frame_trace(reference_frame, ephemeris_time, nadir=False):
+        if nadir:
+            return [], []
+
+        frame_codes = [reference_frame]
+
+        print(frame_codes, reference_frame)
+        _, frame_type, _ = spice.frinfo(reference_frame)
+        frame_types = [frame_type]
+
+
+        while(frame_codes[-1] != 1):
+
+            current_frame = frame_codes[-1]
+            try:
+                matrix, frame_code, frame_type = FrameChain.resolve_parent_frame_matrix(current_frame, ephemeris_time)
+                print(f'Frame {current_frame} is of type {frame_type} and is attached to {frame_code}')
+            except Exception as e:
+                print('something bad occured within resolution of parent')
+                print(e)
+                break
+            
+            _, frame_type, _ = spice.frinfo(frame_code)
+            print(matrix, frame_code, frame_type)
+            frame_codes.append(frame_code)
+            frame_types.append(frame_type)
+        
+
+        print(f'All frame codes are {frame_codes} for types {frame_types}')
+        constant_frames = []
+        while frame_codes:
+            print(f'Comparing frame type {frame_types[0]}')
+            if frame_types[0] == 4 or frame_types[0] == 6:
+                print(f'Frame is either 4 or 6. adding as constnat')
+                constant_frames.append(frame_codes.pop(0))
+                frame_types.pop(0)
+            else:
+                break
+
+        time_dependent_frames = []
+        if len(constant_frames) != 0:
+            time_dependent_frames.append(constant_frames[-1])
+
+        while frame_codes:
+            time_dependent_frames.append(frame_codes.pop(0))
+
+
+        time_dependent_frames_names = [spice.frmnam(id) for id in time_dependent_frames] 
+        constant_frames_names = [spice.frmnam(id) for id in constant_frames] 
+
+        print(f'Time dependent frames are {time_dependent_frames} -> {time_dependent_frames_names}')
+        print(f'Constant frames are {constant_frames} -> {constant_frames_names}')
+
+        return time_dependent_frames, constant_frames
+    
+
+    @staticmethod
+    def frame_trace_old(reference_frame, ephemeris_time, nadir=False):
         if nadir:
             return [], []
 
@@ -184,7 +298,7 @@ class FrameChain(nx.DiGraph):
             frame_types.append(frame_type)
         constant_frames = []
         while frame_codes:
-            if frame_types[0] == 4:
+            if frame_types[0] == 4 or frame_types[0] == 6:
                 constant_frames.append(frame_codes.pop(0))
                 frame_types.pop(0)
             else:
@@ -263,12 +377,21 @@ class FrameChain(nx.DiGraph):
           Returns the source node id, destination node id, and edge dictionary
           which contains the rotation from source to destination.
         """
+        print(f'Looking for last time dependedn frmames between {source} and {destination}')
+        
         path = shortest_path(self, source, destination)
+        print(f'shortest path is {path}')
         # Reverse the path to search bottom up to find the last time dependent
         # frame between the source and destination
         path.reverse()
         for i in range(len(path) - 1):
             edge = self.edges[path[i+1], path[i]]
+            print(f'considering edge {i+1} to {i}')
+            rtype = type(edge['rotation'])
+
+            mat = edge['rotation']
+            print(f'rotation type is {rtype}, mat = {mat}') 
+
             if isinstance(edge['rotation'], TimeDependentRotation):
                 return path[i+1], path[i], edge
 
@@ -393,6 +516,9 @@ class FrameChain(nx.DiGraph):
         times : list
                 A list of times to compute the rotation at
         """
+
+
+        print(f'Computing time dependent rotations for frames {frames}')
         for s, d in frames:
             quats = np.zeros((len(times), 4))
             avs = []
