@@ -1,10 +1,14 @@
-import spiceypy as spice
 import numpy as np
+import pvl
+import pyspiceql
+import spiceypy as spice
+
 from ale.base.data_naif import NaifSpice
 from ale.base.label_isis import IsisLabel
 from ale.base.type_sensor import Framer
 from ale.base.type_distortion import LoDistortion, NoDistortion
 from ale.base.base import Driver
+from ale.base import WrongInstrumentException
 
 
 class LoHighCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, LoDistortion, Driver):
@@ -26,9 +30,16 @@ class LoHighCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, LoDisto
                     'Lunar Orbiter 4': 'LO4_HIGH_RESOLUTION_CAMERA',
                     'Lunar Orbiter 5': 'LO5_HIGH_RESOLUTION_CAMERA'}
 
-        lookup_table = {'High Resolution Camera': lo_table[self.spacecraft_name]}
+        try:
+            mapped = lo_table[self.spacecraft_name]
+        except KeyError:
+            raise WrongInstrumentException(f"Unknown spacecraft for LO High camera: {self.spacecraft_name}.")
 
-        return lookup_table[super().instrument_id]
+        lookup_table = {'High Resolution Camera': mapped}
+        key = super().instrument_id
+        if key not in lookup_table:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return lookup_table[key]
 
     @property
     def sensor_model_version(self):
@@ -66,8 +77,9 @@ class LoHighCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, LoDisto
         : float
           ephemeris time of the image
         """
-        
-        return spice.utc2et(self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"))
+        if not hasattr(self, "_ephemeris_start_time"):
+          self._ephemeris_start_time = pyspiceql.utcToEt(utc=self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"), searchKernels=self.search_kernels, useWeb=self.use_web)[0]
+        return self._ephemeris_start_time
     
     @property
     def ephemeris_stop_time(self):
@@ -83,21 +95,6 @@ class LoHighCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, LoDisto
         """
         
         return self.ephemeris_start_time
-    
-
-    
-    @property
-    def ikid(self):
-        """
-        Overridden to grab the ikid from the Isis Cube since there is no way to
-        obtain this value with a spice bods2c call.
-
-        Returns
-        -------
-        : int
-          Naif ID used to for identifying the instrument in Spice kernels
-        """
-        return spice.namfrm(self.instrument_id)
     
     @property
     def detector_center_line(self):
@@ -165,11 +162,21 @@ class LoHighCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, LoDisto
         if (not hasattr(self, "_naif_keywords")):
           # From ISIS LoCameraFiducialMap
 
+          p_fidSamples = self.label['IsisCube']['Instrument']['FiducialSamples']
+          p_fidLines = self.label['IsisCube']['Instrument']['FiducialLines']
+          p_fidXCoords = self.label['IsisCube']['Instrument']['FiducialXCoordinates']
+          p_fidYCoords = self.label['IsisCube']['Instrument']['FiducialYCoordinates']
           # Read Fiducials
-          p_fidSamples = self.label['IsisCube']['Instrument']['FiducialSamples'].value
-          p_fidLines = self.label['IsisCube']['Instrument']['FiducialLines'].value
-          p_fidXCoords = self.label['IsisCube']['Instrument']['FiducialXCoordinates'].value
-          p_fidYCoords = self.label['IsisCube']['Instrument']['FiducialYCoordinates'].value
+          if isinstance(p_fidSamples, pvl.collections.Quantity):
+            p_fidSamples = p_fidSamples.value
+            p_fidLines = p_fidLines.value
+            p_fidXCoords = p_fidXCoords.value
+            p_fidYCoords = p_fidYCoords.value
+          elif isinstance(p_fidSamples, dict):
+            p_fidSamples = p_fidSamples["value"]
+            p_fidLines = p_fidLines["value"]
+            p_fidXCoords = p_fidXCoords["value"]
+            p_fidYCoords = p_fidYCoords["value"]
 
           # Create Affine Transformation
           p_src = [p_fidSamples, p_fidLines]
@@ -232,6 +239,16 @@ class LoMediumCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDis
                 'Lunar Orbiter 4': {'name':'LO4_MEDIUM_RESOLUTION_CAMERA', 'id':-534002},
                 'Lunar Orbiter 5': {'name':'LO5_MEDIUM_RESOLUTION_CAMERA', 'id':-535002}}
 
+    @property 
+    def lo_detector_list(self):
+        return [
+          'LO1_MEDIUM_RESOLUTION_CAMERA', 
+          'LO2_MEDIUM_RESOLUTION_CAMERA',
+          'LO3_MEDIUM_RESOLUTION_CAMERA',
+          'LO4_MEDIUM_RESOLUTION_CAMERA',
+          'LO5_MEDIUM_RESOLUTION_CAMERA'
+        ]
+
     @property
     def instrument_id(self):
         """
@@ -242,8 +259,17 @@ class LoMediumCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDis
         : str
           Name of the instrument
         """
-        lookup_table = {'Medium Resolution Camera': self.lo_detector_map[self.spacecraft_name]['name']}
-        return lookup_table[super().instrument_id]
+        try: 
+          lookup_table = {'Medium Resolution Camera': self.lo_detector_map[self.spacecraft_name]['name']}
+        except Exception:
+          key = super().instrument_id
+          if key in self.lo_detector_list:
+              return key
+          raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        key = super().instrument_id
+        if key not in lookup_table:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return lookup_table[key]
 
     @property
     def ikid(self):
@@ -294,7 +320,7 @@ class LoMediumCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDis
           ephemeris time of the image
         """
         
-        return spice.utc2et(self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"))
+        return pyspiceql.utcToEt(utc=self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"), searchKernels=self.search_kernels, useWeb=self.use_web)[0]
     
     @property
     def ephemeris_stop_time(self):

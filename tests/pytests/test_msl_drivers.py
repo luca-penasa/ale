@@ -8,8 +8,7 @@ import ale
 from conftest import get_image_label, get_isd, get_image_kernels, convert_kernels, compare_dicts
 from ale.drivers.msl_drivers import MslMastcamPds3NaifSpiceDriver
 
-from conftest import get_image_label
-from unittest.mock import PropertyMock, patch
+from unittest.mock import PropertyMock, patch, call
 
 
 @pytest.fixture(scope='module')
@@ -24,7 +23,7 @@ def test_msl_mastcam_load_local(test_mastcam_kernels):
     label_file = get_image_label('2264ML0121141200805116C00_DRCL', "pds3")
     compare_dict = get_isd("msl")
 
-    isd_str = ale.loads(label_file, props={'kernels': test_mastcam_kernels, 'local': True})
+    isd_str = ale.loads(label_file, props={'kernels': test_mastcam_kernels, 'local': True, 'attach_kernels': False}, verbose=True)
     isd_obj = json.loads(isd_str)
     assert compare_dicts(isd_obj, compare_dict) == []
 
@@ -32,7 +31,7 @@ def test_msl_mastcam_load_nadir(test_mastcam_kernels):
     label_file = get_image_label('2264ML0121141200805116C00_DRCL', "pds3")
     compare_dict = get_isd("msl_nadir")
 
-    isd_str = ale.loads(label_file, props={'kernels': test_mastcam_kernels, 'nadir': True})
+    isd_str = ale.loads(label_file, props={'kernels': test_mastcam_kernels, 'nadir': True, 'attach_kernels': False})
     isd_obj = json.loads(isd_str)
     assert compare_dicts(isd_obj, compare_dict) == []
 
@@ -53,9 +52,11 @@ class test_mastcam_pds_naif(unittest.TestCase):
         np.testing.assert_almost_equal(self.driver.exposure_duration, 0.0102)
 
     def test_final_inst_frame(self):
-        with patch('ale.drivers.msl_drivers.spice.bods2c', new_callable=PropertyMock, return_value=-76000) as bods2c:
+        with patch('ale.drivers.msl_drivers.pyspiceql.translateNameToCode', return_value=[-76000]) as translateNameToCode:
             assert self.driver.final_inst_frame == -76000
-            bods2c.assert_called_with("MSL_ROVER")
+            calls = [call(frame='MSL_ROVER', mission='', searchKernels=False, useWeb=False)]
+            translateNameToCode.assert_has_calls(calls)
+            assert translateNameToCode.call_count == 1
 
     def test_cahvor_camera_dict(self):
         cahvor_camera_dict = self.driver.cahvor_camera_dict
@@ -66,20 +67,18 @@ class test_mastcam_pds_naif(unittest.TestCase):
         np.testing.assert_allclose(cahvor_camera_dict['V'], [5.843885e+03, -8.213856e+03, 9.438374e+03])
 
     def test_sensor_frame_id(self):
-        with patch('ale.drivers.msl_drivers.spice.bods2c', return_value=-76562) as bods2c:
+        with patch('ale.drivers.msl_drivers.pyspiceql.translateNameToCode', return_value=[-76562]) as translateNameToCode:
             assert self.driver.sensor_frame_id == -76562
-            bods2c.assert_called_with("MSL_SITE_62")
-    
+            calls = [call(frame='MSL_SITE_62', mission='', searchKernels=False, useWeb=False)]
+            translateNameToCode.assert_has_calls(calls)
+            assert translateNameToCode.call_count == 1
+
     def test_focal2pixel_lines(self):
-        with patch('ale.drivers.msl_drivers.spice.bods2c', new_callable=PropertyMock, return_value=-76220) as bods2c, \
-             patch('ale.drivers.msl_drivers.spice.gdpool', new_callable=PropertyMock, return_value=[100]) as gdpool:
+        with patch.object(MslMastcamPds3NaifSpiceDriver, 'focal_length', new_callable=PropertyMock) as focal_length:
+            focal_length.return_value = 100
             np.testing.assert_allclose(self.driver.focal2pixel_lines, [0, 0, 137.96844341513602])
-            bods2c.assert_called_with('MSL_MASTCAM_RIGHT')
-            gdpool.assert_called_with('INS-76220_FOCAL_LENGTH', 0, 1)
 
     def test_focal2pixel_samples(self):
-        with patch('ale.drivers.msl_drivers.spice.bods2c', new_callable=PropertyMock, return_value=-76220) as bods2c, \
-             patch('ale.drivers.msl_drivers.spice.gdpool', new_callable=PropertyMock, return_value=[100]) as gdpool:
+        with patch.object(MslMastcamPds3NaifSpiceDriver, 'focal_length', new_callable=PropertyMock) as focal_length:
+            focal_length.return_value = 100
             np.testing.assert_allclose(self.driver.focal2pixel_samples, [0, 137.96844341513602, 0])
-            bods2c.assert_called_with('MSL_MASTCAM_RIGHT')
-            gdpool.assert_called_with('INS-76220_FOCAL_LENGTH', 0, 1)

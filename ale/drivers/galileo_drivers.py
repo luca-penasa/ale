@@ -1,13 +1,13 @@
 import datetime
 
-import spiceypy as spice
+from pyspiceql import pyspiceql
 
-import ale
 from ale.base.data_naif import NaifSpice
 from ale.base.label_isis import IsisLabel
 from ale.base.type_sensor import Framer
 from ale.base.type_distortion import RadialDistortion
 from ale.base.base import Driver
+from ale.base import WrongInstrumentException
 
 ssi_id_lookup = {
     "SOLID STATE IMAGING SYSTEM" : "GLL_SSI_PLATFORM"
@@ -29,7 +29,10 @@ class GalileoSsiIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, RadialDis
         : str
           instrument id
         """
-        return ssi_id_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in ssi_id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return ssi_id_lookup[key]
 
     @property
     def sensor_name(self):
@@ -59,24 +62,10 @@ class GalileoSsiIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, RadialDis
         start_time_as_date = self.label["IsisCube"]["Instrument"]["StartTime"].replace(tzinfo=None)
 
         if start_time_as_date < removeCoverDate:
-            key_str = "_K1_COVER"
+            key_str = "K1_COVER"
         else:
-            key_str = "_K1"
-        k1 = spice.gdpool("INS" + str(self.ikid) + key_str, 0, 1);
-        return k1
-
-    @property
-    def naif_keywords(self):
-        """
-        Adds the focal length cover keyword to the already populated naif keywords
-
-        Returns
-        -------
-        : dict
-          Dictionary of keywords and values that ISIS creates and attaches to the label
-        """
-        key = "INS" + str(self.ikid) + "_FOCAL_LENGTH_COVER";
-        return {**super().naif_keywords, key: spice.gdpool(key, 0, 1)}
+            key_str = "K1"
+        return self.naif_keywords[f"INS{str(self.ikid)}_{key_str}"]
 
     @property
     def ephemeris_start_time(self):
@@ -88,7 +77,7 @@ class GalileoSsiIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, RadialDis
         : float
           start time
         """
-        return spice.str2et(self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"))
+        return pyspiceql.utcToEt(utc=self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"), searchKernels=self.search_kernels, useWeb=self.use_web)[0]
 
     @property
     def center_ephemeris_time(self):

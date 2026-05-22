@@ -1,8 +1,14 @@
-import pvl
 import json
+import sys 
 
 import tempfile
 import os 
+from concurrent.futures import ThreadPoolExecutor
+
+import time
+import pvl
+
+from ale import logger
 
 class Driver():
     """
@@ -41,6 +47,80 @@ class Driver():
         if parsed_label:
             self._label = parsed_label
 
+    def to_dict(self, properties=None):
+        def get_property(prop_name):
+            try:
+                return getattr(self, prop_name)
+            except Exception as e:
+                import traceback
+                logger.debug(f"Failed to get property {prop_name} with type {type(e)}: {e}")
+                logger.debug(traceback.format_exc())
+                return None 
+
+        if properties is None:
+            properties = []
+            for attr in dir(self):
+              if isinstance(getattr(self.__class__, attr, None), property):
+                  properties.append(attr)
+
+        spice_props = ["spacecraft_id", 
+                       "target_id", 
+                       "target_frame_id",
+                       "reference_frame",
+                       "sensor_frame_id"]
+
+        # Remove position and orientation properties
+        ephemeris_props = ["sensor_position", "sun_position", "frame_chain"]
+        for prop in ephemeris_props:
+            properties.remove(prop)
+
+        for prop in spice_props:
+            if prop in properties:
+                properties.remove(prop)
+
+        if "fikid" in properties:
+            properties.remove("fikid")
+            spice_props.append("fikid")
+        if "sensor_orientation" in properties:
+            properties.remove("sensor_orientation")
+
+        data = {}
+        num_procs = max(os.cpu_count(), 10)
+        logger.info(f"Num procs {num_procs}")
+        # Get ikid and naif_keywords to avoid race conditions
+        data["ikid"] = get_property("ikid")
+        data["naif_keywords"] = get_property("naif_keywords")
+        
+        logger.info(f"Getting props {spice_props}")
+        start = time.time()
+        with ThreadPoolExecutor(max_workers=num_procs) as executor:
+          futures = [executor.submit(get_property, name) for name in spice_props]
+          results = [future.result() for future in futures]
+
+          for result, property_name in zip(results, spice_props):
+              data[property_name] = result
+        end = time.time()
+        logger.info(f"Time to get spice_props {end - start}")
+        
+        logger.info(f"Getting props {properties}")
+        start = time.time()
+        for prop in properties:
+            data[prop] = get_property(prop)
+        end = time.time()
+        logger.info(f"Time to get other_props {end - start}")
+        
+        logger.info(f"Getting props {ephemeris_props}")
+        start = time.time()
+        with ThreadPoolExecutor(max_workers=num_procs) as executor:
+          futures = [executor.submit(get_property, name) for name in ephemeris_props]
+          results = [future.result() for future in futures]
+
+          for result, property_name in zip(results, ephemeris_props):
+              data[property_name] = result
+        end = time.time()
+        logger.info(f"Time to get ephem_props {end - start}")
+        return data
+    
     @property
     def image_lines(self):
         """
@@ -422,6 +502,35 @@ class Driver():
         """
         return self.__module__.split('.')[-1].split('_')[0]
 
+    @property
+    def read_geodata(self):
+        if not hasattr(self, "_geodata"):
+            try: 
+              from osgeo import gdal
+              gdal.UseExceptions()
+            except: 
+                self._geodata = None
+                return self._geodata
+
+            if isinstance(self._file, pvl.PVLModule):
+                # save it to a temp folder
+                with tempfile.NamedTemporaryFile() as tmp:
+                    tmp.write(pvl.dumps(self._file)) 
+                    try:
+                        self._geodata = gdal.Open(tempfile.name)
+                    except:
+                        self._geodata = None
+            else: 
+                # should be a path
+                if not os.path.exists(self._file): 
+                    self._geodata = None
+                else: 
+                    try:
+                        self._geodata = gdal.Open(self._file)
+                    except:
+                        self._geodata = None
+        return self._geodata
+
     @property 
     def projection(self):
         """
@@ -431,36 +540,15 @@ class Driver():
         -------
         str
             A string representation of the projection information.
-
         """
-        if not hasattr(self, "_projection"): 
-            try: 
-              from osgeo import gdal 
-            except: 
-                self._projection = ""
-                return self._projection
-
-            geodata = None
-            if isinstance(self._file, pvl.PVLModule):
-                # save it to a temp folder
-                with tempfile.NamedTemporaryFile() as tmp:
-                    tmp.write(pvl.dumps(self._file)) 
-
-                    geodata = gdal.Open(tempfile.name)
-            else: 
-                # should be a path
-                if not os.path.exists(self._file): 
-                    self._projection = "" 
-                else: 
-                    geodata = gdal.Open(self._file)
-   
-
+        if not hasattr(self, "_projection"):
             # Try to get the projection, if we are unsuccessful set it
             # to empty
             try:
-              self._projection = geodata.GetSpatialRef().ExportToProj4()
+                self._projection = self.read_geodata.GetSpatialRef().ExportToProj4()
             except:
-              self._projection = "" 
+                self._projection = ""
+
         return self._projection
     
     @property 
@@ -475,25 +563,10 @@ class Driver():
 
         """
         if not hasattr(self, "_geotransform"): 
-            try: 
-              from osgeo import gdal 
-            except: 
+            # Try to get the geotransform, if we are unsuccessful set it
+            # to the identity
+            try:
+                self._geotransform = self.read_geodata.GetGeoTransform()
+            except:
                 self._geotransform = (0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-                return self._geotransform
-
-            if isinstance(self._file, pvl.PVLModule):
-                # save it to a temp folder
-                with tempfile.NamedTemporaryFile() as tmp:
-                    tmp.write(pvl.dumps(self._file)) 
-
-                    geodata = gdal.Open(tempfile.name)
-                    self._geotransform = geodata.GetGeoTransform()
-            else: 
-                # should be a path
-                if not os.path.exists(self._file): 
-                    self._geotransform = (0.0, 1.0, 0.0, 0.0, 0.0, 1.0) 
-                else: 
-                    geodata = gdal.Open(self._file)
-                    self._geotransform = geodata.GetGeoTransform()
-                
         return self._geotransform

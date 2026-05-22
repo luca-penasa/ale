@@ -3,7 +3,6 @@ import numpy as np
 import os
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
-import spiceypy as spice
 import json
 
 from conftest import get_image, get_image_label, get_isd, get_image_kernels, convert_kernels, compare_dicts
@@ -24,10 +23,45 @@ def test_kernels():
 def test_load(test_kernels):
     label_file = get_image_label('AS15-M-1450', 'isis3')
     compare_dict = get_isd("apollometric")
-    isd_str = ale.loads(label_file, props={'kernels': test_kernels})
+    isd_str = ale.loads(label_file, props={'kernels': test_kernels, 'attach_kernels': False}, verbose=True)
     isd_obj = json.loads(isd_str)
     print(json.dumps(isd_obj, indent=2))
+    print("======================")
+    print(json.dumps(compare_dict, indent=2))
     assert compare_dicts(isd_obj, compare_dict) == []
+
+
+def test_load_kernels(test_kernels):
+    label_file = get_image_label('AS15-M-1450', 'isis3')
+    compare_dict = get_isd("apollometric")
+    isd_str = ale.loads(label_file, props={'kernels': test_kernels}, verbose=True)
+    isd_obj = json.loads(isd_str)
+    print(json.dumps(isd_obj, indent=2))
+    print("======================")
+    print(json.dumps(compare_dict, indent=2))
+    assert isd_obj['kernels']
+    assert type(isd_obj['kernels']) == dict
+    assert isd_obj['kernels']['misc']
+    assert type(isd_obj['kernels']['misc']) == list
+
+
+def test_bad_kernels():
+    label_file = get_image_label('AS15-M-1450', 'isis3')
+
+    # test invalid kernel type
+    kernels_dict = {"ck": "test_ck", "spk": "test_spk", "unknown": "test_unknown"}
+    with pytest.raises(Exception) as e:
+        isd_str = ale.loads(label_file, props={'kernels': kernels_dict}, verbose=True)
+    
+    # test invalid kernel quality type
+    kernels_dict = {"ck": "test_ck", "spk": "test_spk", "abc_ck_quality": "test_unknown_quality"}
+    with pytest.raises(Exception) as e:
+        isd_str = ale.loads(label_file, props={'kernels': kernels_dict}, verbose=True)
+    
+    # test invalid kernel value
+    kernels_dict = {"ck": "test_ck", "spk": "test_spk"}
+    with pytest.raises(Exception) as e:
+        isd_str = ale.loads(label_file, props={'kernels': kernels_dict}, verbose=True)
 
 
 class test_isis3_naif(unittest.TestCase):
@@ -43,22 +77,6 @@ class test_isis3_naif(unittest.TestCase):
 
     def test_exposure_duration(self):
         assert self.driver.exposure_duration == 0.0
-
-    def test_ephemeris_start_time(self):
-        with patch('ale.drivers.apollo_drivers.spice.str2et', return_value=1234) as gdpool:
-            assert self.driver.ephemeris_start_time == 1234
-
-    def test_ephemeris_stop_time(self):
-        with patch('ale.drivers.apollo_drivers.spice.str2et', return_value=1234) as gdpool:
-            assert self.driver.ephemeris_stop_time == 1234
-
-    def test_detector_center_sample(self):
-        with patch('ale.drivers.apollo_drivers.spice.gdpool', return_value=[0, 1727.5]) as gdpool:
-            assert self.driver.detector_center_sample == 1727.5
-
-    def test_detector_center_line(self):
-        with patch('ale.drivers.apollo_drivers.spice.gdpool', return_value=[0, 1727.5]) as gdpool:
-            assert self.driver.detector_center_line == 0
 
     def test_sensor_model_version(self):
         assert self.driver.sensor_model_version == 1

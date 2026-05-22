@@ -1,7 +1,6 @@
-import numpy as np
-import spiceypy as spice
+import pyspiceql
 
-from ale.base import Driver
+from ale.base import Driver, WrongInstrumentException
 from ale.base.data_naif import NaifSpice
 from ale.base.data_isis import IsisSpice
 from ale.base.label_pds3 import Pds3Label
@@ -9,8 +8,11 @@ from ale.base.label_isis import IsisLabel
 from ale.base.type_distortion import RadialDistortion, NoDistortion
 from ale.base.type_sensor import LineScanner
 from ale.base.type_distortion import NoDistortion
+from ale.util import CachedDict
 
 from ale import util
+
+import numpy as np
 
 class MroMarciIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDistortion, Driver):
 
@@ -38,8 +40,11 @@ class MroMarciIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
           }
         }
         # This should likely return a list but would only matter in USGSCSM
-        band_bin = self.label["IsisCube"]["BandBin"]["FilterName"][0]
-        return id_lookup[super().instrument_id][band_bin]
+        try:
+            band_bin = self.label["IsisCube"]["BandBin"]["FilterName"][0]
+            return id_lookup[super().instrument_id][band_bin]
+        except KeyError:
+            raise WrongInstrumentException(f"Missing FilterName keyword. Expected FilterName in ISIS label.")
 
     @property
     def base_ikid(self):
@@ -54,7 +59,7 @@ class MroMarciIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
           Naif ID used to for identifying the instrument in Spice kernels
         """
         if not hasattr(self, "_base_ikid"):
-            self._base_ikid = spice.bods2c("MRO_MARCI")
+            self._base_ikid = pyspiceql.translateNameToCode(frame="MRO_MARCI", mission=self.spiceql_mission, searchKernels=self.search_kernels, useWeb=self.use_web)[0]
         return self._base_ikid
 
     @property
@@ -101,7 +106,7 @@ class MroMarciIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
             }
             self._filters = self.label["IsisCube"]["BandBin"]["FilterName"]
 
-            self._framelet_rate = self.label["IsisCube"]["Instrument"]["InterframeDelay"].value
+            self._framelet_rate = self.interframe_delay
             framelet_height = 16
 
             self._actual_framelet_height = framelet_height / sum_mode
@@ -225,7 +230,7 @@ class MroMarciIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
         : list<double>
           focal plane to detector samples
         """
-        return list(spice.gdpool('INS{}_ITRANSS'.format(self.base_ikid), 0, 3))
+        return self.naif_keywords['INS{}_ITRANSS'.format(self.base_ikid)]
 
     @property
     def focal2pixel_lines(self):
@@ -237,7 +242,7 @@ class MroMarciIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
         : list<double>
           focal plane to detector lines
         """
-        return list(spice.gdpool('INS{}_ITRANSL'.format(self.base_ikid), 0, 3))
+        return self.naif_keywords['INS{}_ITRANSL'.format(self.base_ikid)]
 
     @property
     def naif_keywords(self):
@@ -250,7 +255,9 @@ class MroMarciIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
         : dict
           Dictionary of keywords and values that ISIS creates and attaches to the label
         """
-        return {**super().naif_keywords, **util.query_kernel_pool(f"*{self.base_ikid}*")}
+        if not hasattr(self, "_naif_keywords"):
+          self._naif_keywords = {**super().naif_keywords, **pyspiceql.findMissionKeywords(key=f"*{self.base_ikid}*", mission=self.spiceql_mission, searchKernels=self.search_kernels, useWeb=self.use_web)[0]}
+        return self._naif_keywords
 
     @property
     def sensor_name(self):
@@ -287,7 +294,10 @@ class MroCtxIsisLabelIsisSpiceDriver(LineScanner, IsisLabel, IsisSpice, RadialDi
         id_lookup = {
         "CTX" : "MRO_CTX"
         }
-        return id_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return id_lookup[key]
 
     @property
     def spacecraft_id(self):
@@ -341,7 +351,10 @@ class MroCtxIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, RadialDi
         id_lookup = {
         "CTX" : "MRO_CTX"
         }
-        return id_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return id_lookup[key]
 
     @property
     def sensor_name(self):
@@ -349,23 +362,6 @@ class MroCtxIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, RadialDi
         ISIS doesn't propergate this to the ingested cube label, so hard-code it.
         """
         return "CONTEXT CAMERA"
-
-    @property
-    def ephemeris_start_time(self):
-        """
-        Returns the ephemeris start time of the image.
-        Expects spacecraft_id to be defined. This should be the integer
-        Naif ID code for the spacecraft.
-
-        Returns
-        -------
-        : float
-          ephemeris start time of the image
-        """
-        if not hasattr(self, '_ephemeris_start_time'):
-            sclock = self.label['IsisCube']['Instrument']['SpacecraftClockCount']
-            self._ephemeris_start_time = spice.scs2e(self.spacecraft_id, sclock)
-        return self._ephemeris_start_time
 
     @property
     def ephemeris_stop_time(self):
@@ -453,8 +449,10 @@ class MroCtxPds3LabelNaifSpiceDriver(LineScanner, Pds3Label, NaifSpice, RadialDi
             'CONTEXT CAMERA':'MRO_CTX',
             'CTX':'MRO_CTX'
         }
-
-        return id_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return id_lookup[key]
 
     @property
     def spacecraft_name(self):
@@ -519,6 +517,7 @@ class MroCtxPds3LabelNaifSpiceDriver(LineScanner, Pds3Label, NaifSpice, RadialDi
         """
         return self.label['SPACECRAFT_NAME']
 
+
 hirise_ccd_lookup = {
   0: 0,
   1: 1,
@@ -558,7 +557,10 @@ class MroHiRiseIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, Radia
         id_lookup = {
             "HIRISE" : "MRO_HIRISE"
         }
-        return id_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return id_lookup[key]
 
     @property
     def sensor_name(self):
@@ -601,7 +603,11 @@ class MroHiRiseIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, Radia
 
             # The -74999 is the code to select the transformation from
             # high-precision MRO SCLK to ET
-            start_time = spice.scs2e(-74999, self.spacecraft_clock_start_count)
+            start_time = pyspiceql.strSclkToEt(frameCode=-74999, 
+                                               sclk=self.spacecraft_clock_start_count, 
+                                               mission=self.spiceql_mission, 
+                                               searchKernels=self.search_kernels,
+                                               useWeb=self.use_web)[0]
             # Adjust the start time so that it is the effective time for
             # the first line in the image file.  Note that on 2006-03-29, this
             # time is now subtracted as opposed to adding it.  The computed start
@@ -641,7 +647,7 @@ class MroHiRiseIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, Radia
         """
         if not hasattr(self, "_ccd_ikid"):
             ccd_number = hirise_ccd_lookup[self.label["IsisCube"]["Instrument"]["CpmmNumber"]]
-            self._ccd_ikid = spice.bods2c("MRO_HIRISE_CCD{}".format(ccd_number))
+            self._ccd_ikid = pyspiceql.translateNameToCode(frame="MRO_HIRISE_CCD{}".format(ccd_number), mission=self.spiceql_mission, searchKernels=self.search_kernels, useWeb=self.use_web)[0]
         return self._ccd_ikid
 
     @property
@@ -695,7 +701,11 @@ class MroHiRiseIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, Radia
         : dict
           Dictionary of keywords and values that ISIS creates and attaches to the label
         """
-        return {**super().naif_keywords, **util.query_kernel_pool(f"*{self.ccd_ikid}*")}
+        if not hasattr(self, "_mrohirise_naif_keywords"):
+            hirise_keywords = pyspiceql.findMissionKeywords(key=f"*{self.ccd_ikid}*", mission=self.spiceql_mission, searchKernels=self.search_kernels, useWeb=self.use_web)[0]
+            _mrohirise_naif_keywords = {**super().naif_keywords, **hirise_keywords}
+        return _mrohirise_naif_keywords
+
 
     @property
     def sensor_model_version(self):
@@ -728,9 +738,17 @@ class MroCrismIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
           instrument id
         """
         id_lookup = {
-        "CRISM" : "MRO_CRISM_VNIR"
+          "S" : "MRO_CRISM_VNIR",
+          "J" : "MRO_CRISM_VNIR",
+          "L" : "MRO_CRISM_IR"
         }
-        return id_lookup[super().instrument_id]
+        try:
+          key = self.label["IsisCube"]["Instrument"]["SensorId"]
+        except KeyError:
+          raise WrongInstrumentException(f"Missing SensorId keyword. Expected SensorId in ISIS label.")
+        if key not in id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return id_lookup[key]
 
     @property
     def ephemeris_start_time(self):
@@ -738,14 +756,21 @@ class MroCrismIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
         Returns the starting ephemeris time of the image. Expects spacecraft_id to
         be defined. NAIF code -74999 was obtained from ISIS Crism camera model. Expects
         spacecraft_clock_start_count to be defined. This must be a string
-        containing the start clock count of the spacecraft
+        containing the start clock count of the spacecraft. The -74999 code is a 
+        "high precision" on board clock, check the mro sclks for more details.
 
         Returns
         -------
         : double
           Starting ephemeris time of the image
         """
-        return spice.scs2e(-74999, self.spacecraft_clock_start_count)
+        if not hasattr(self, "_ephemeris_start_time"):
+            self._ephemeris_start_time = pyspiceql.strSclkToEt(frameCode=-74999, 
+                                                               sclk=self.spacecraft_clock_start_count, 
+                                                               mission=self.spiceql_mission, 
+                                                               searchKernels=self.search_kernels,
+                                                               useWeb=self.use_web)[0]
+        return self._ephemeris_start_time
 
     @property
     def ephemeris_stop_time(self):
@@ -753,14 +778,21 @@ class MroCrismIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
         Returns the ephemeris stop time of the image. Expects spacecraft_id to
         be defined. NAIF code -74999 was obtained from ISIS Crism camera model.
         Expects spacecraft_clock_stop_count to be defined. This must be a string
-        containing the stop clock count of the spacecraft
+        containing the stop clock count of the spacecraft. The -74999 code is a 
+        "high precision" on board clock, check the mro sclks for more details.
 
         Returns
         -------
         : double
           Ephemeris stop time of the image
         """
-        return spice.scs2e(-74999, self.spacecraft_clock_stop_count)
+        if not hasattr(self, "_ephemeris_stop_time"):
+            self._ephemeris_stop_time = pyspiceql.strSclkToEt(frameCode=-74999, 
+                                                              sclk=self.spacecraft_clock_stop_count,
+                                                              mission=self.spiceql_mission,
+                                                              searchKernels=self.search_kernels,
+                                                              useWeb=self.use_web)[0]
+        return self._ephemeris_stop_time
 
     @property
     def spacecraft_name(self):
@@ -793,22 +825,9 @@ class MroCrismIsisLabelNaifSpiceDriver(LineScanner, IsisLabel, NaifSpice, NoDist
         return self.instrument_id
 
     @property
-    def sensor_frame_id(self):
-        """
-        Returns the Naif ID code for the sensor reference frame.
-        This is the frame of the OsirisRex instrument itself, and is not dependent on filter.
-
-        Returns
-        -------
-        : int
-          Naif ID code for the sensor frame
-        """
-        return -74000
-
-    @property
     def sensor_model_version(self):
         """
-        The ISIS Sensor model number for HiRise in ISIS. This is likely just 1
+        The ISIS Sensor model number for CrismCamera in ISIS. This is likely just 1
 
         Returns
         -------

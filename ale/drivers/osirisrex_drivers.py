@@ -1,11 +1,11 @@
-import spiceypy as spice
+import pyspiceql
 
-import ale
 from ale.base.data_naif import NaifSpice
 from ale.base.label_isis import IsisLabel
 from ale.base.type_sensor import Framer
 from ale.base.base import Driver
 from ale.base.type_distortion import RadialDistortion
+from ale.base import WrongInstrumentException
 
 from ale import util
 
@@ -27,7 +27,10 @@ class OsirisRexCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, Radi
         "PolyCam" : "POLYCAM",
         "SamCam" : "SAMCAM"
         }
-        return 'ORX_OCAMS_' + sensor_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in sensor_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return 'ORX_OCAMS_' + sensor_lookup[key]
     
     @property
     def polyCamFocusPositionNaifId(self):
@@ -81,7 +84,7 @@ class OsirisRexCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, Radi
         : int
           The detector line of the principle point
         """
-        return float(spice.gdpool('INS{}_CCD_CENTER'.format(self.ikid), 0, 2)[1])
+        return float(self.naif_keywords['INS{}_CCD_CENTER'.format(self.ikid)][1])
 
     @property
     def detector_center_sample(self):
@@ -95,7 +98,7 @@ class OsirisRexCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, Radi
           The detector sample of the principle point
         """
 
-        return float(spice.gdpool('INS{}_CCD_CENTER'.format(self.ikid), 0, 2)[0])
+        return float(self.naif_keywords['INS{}_CCD_CENTER'.format(self.ikid)][0])
 
     @property
     def filter_name(self):
@@ -121,11 +124,11 @@ class OsirisRexCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, Radi
           Radial distortion coefficients
         """
         if self.filter_name == "UNKNOWN":
-            return spice.gdpool('INS{}_OD_K'.format(self.ikid),0, 3).tolist()
+            return self.naif_keywords['INS{}_OD_K'.format(self.ikid)][0:3]
         else:
             if self.polyCamFocusPositionNaifId != None:
-                return spice.gdpool('INS{focusId}_OD_K_{filter}'.format(focusId = self.polyCamFocusPositionNaifId, filter = self.filter_name),0, 3).tolist()
-            return spice.gdpool('INS{ikid}_OD_K_{filter}'.format(ikid = self.ikid, filter = self.filter_name),0, 3).tolist()
+                return self.naif_keywords['INS{focusId}_OD_K_{filter}'.format(focusId = self.polyCamFocusPositionNaifId, filter = self.filter_name)][0:3]
+            return self.naif_keywords['INS{ikid}_OD_K_{filter}'.format(ikid = self.ikid, filter = self.filter_name)][0:3]
         
     @property
     def naif_keywords(self):
@@ -138,7 +141,12 @@ class OsirisRexCameraIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, Radi
         : dict
           Dictionary of keywords and values that ISIS creates and attaches to the label
         """
-        return {**super().naif_keywords, **util.query_kernel_pool(f"*{self.polyCamFocusPositionNaifId}*")}
+        if not hasattr(self, "_naif_keywords"):
+          keywords = pyspiceql.findMissionKeywords(key=str(self.polyCamFocusPositionNaifId), mission=self.spiceql_mission, searchKernels=self.search_kernels, useWeb=self.use_web)[0]
+          self._naif_keywords = super().naif_keywords
+          if keywords: 
+            self._naif_keywords = self._naif_keywords | keywords 
+        return self._naif_keywords
 
     @property
     def sensor_model_version(self):

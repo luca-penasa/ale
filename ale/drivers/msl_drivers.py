@@ -1,5 +1,5 @@
 import numpy as np
-import spiceypy as spice
+import pyspiceql
 
 from ale.base.data_naif import NaifSpice
 from ale.base.label_pds3 import Pds3Label
@@ -7,6 +7,7 @@ from ale.base.type_sensor import Framer
 from ale.base.type_distortion import CahvorDistortion
 from ale.base.type_sensor import Cahvor
 from ale.base.base import Driver
+from ale.base import WrongInstrumentException
 
 class MslMastcamPds3NaifSpiceDriver(Cahvor, Framer, Pds3Label, NaifSpice, CahvorDistortion, Driver):
     """
@@ -46,7 +47,10 @@ class MslMastcamPds3NaifSpiceDriver(Cahvor, Framer, Pds3Label, NaifSpice, Cahvor
           "NAV_RIGHT_B": 'NAVCAM_RIGHT_B',
           "NAV_LEFT_B": 'NAVCAM_LEFT_B'
         }
-        return self.instrument_host_id + "_" + lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return self.instrument_host_id + "_" + lookup[key]
 
     @property
     def is_navcam(self):
@@ -97,7 +101,9 @@ class MslMastcamPds3NaifSpiceDriver(Cahvor, Framer, Pds3Label, NaifSpice, Cahvor
         : int
           Naif frame code for MSL_ROVER
         """
-        return spice.bods2c("MSL_ROVER")
+        if not hasattr(self, "_final_inst_frame"):
+          self._final_inst_frame = pyspiceql.translateNameToCode(frame="MSL_ROVER", mission=self.spiceql_mission, searchKernels=self.search_kernels, useWeb=self.use_web)[0]
+        return self._final_inst_frame
 
     @property
     def sensor_frame_id(self):
@@ -113,7 +119,7 @@ class MslMastcamPds3NaifSpiceDriver(Cahvor, Framer, Pds3Label, NaifSpice, Cahvor
         """
         if not hasattr(self, "_site_frame_id"):
           site_frame = "MSL_SITE_" + str(self.label["GEOMETRIC_CAMERA_MODEL_PARMS"]["REFERENCE_COORD_SYSTEM_INDEX"][0])
-          self._site_frame_id= spice.bods2c(site_frame)
+          self._site_frame_id = pyspiceql.translateNameToCode(frame=site_frame, mission=self.spiceql_mission, searchKernels=self.search_kernels, useWeb=self.use_web)[0]
         return self._site_frame_id
 
     @property

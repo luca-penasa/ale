@@ -1,13 +1,11 @@
 import pytest
 import os
 import numpy as np
-import spiceypy as spice
 from importlib import reload
 import json
 
 import unittest
-from unittest import mock
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch, call
 from ale.drivers import AleJsonEncoder
 from conftest import get_image_label, get_image_kernels, get_isd, convert_kernels, compare_dicts
 
@@ -61,7 +59,7 @@ def test_fc_load(fc_kernels, label_type):
 
     label_file = get_image_label(label_prefix_file, label_type=label_type)
 
-    isd_str = ale.loads(label_file, props={'kernels': fc_kernels})
+    isd_str = ale.loads(label_file, props={'kernels': fc_kernels, 'attach_kernels': False})
     isd_obj = json.loads(isd_str)
     # print(json.dumps(isd_obj, indent=2))
     assert compare_dicts(isd_obj, compare_dict) == []
@@ -80,8 +78,9 @@ def test_vir_load(vir_kernels):
         patch('ale.drivers.dawn_drivers.parse_table', return_value=housekeeping_dict) as parse_table:
 
         compare_dict = get_isd("dawnvir")
-
-        isd_str = ale.loads(label_file, props={"kernels": vir_kernels, "nadir": False}, verbose=False)
+        
+        isd_str = ale.loads(label_file, props={"kernels": vir_kernels, "nadir": False, 'attach_kernels': False}, verbose=False)
+        print(isd_str)
         isd_obj = json.loads(isd_str)
         x = compare_dicts(isd_obj, compare_dict)
         assert x == []
@@ -106,48 +105,46 @@ class test_dawn_fc_pds3_naif(unittest.TestCase):
         assert self.driver.target_name == 'CERES'
 
     def test_ephemeris_start_time(self):
-        with patch('ale.drivers.dawn_drivers.spice.scs2e', return_value=12345) as scs2e:
+        with patch.object(ale.drivers.dawn_drivers.NaifSpice, 'ephemeris_start_time', new_callable=PropertyMock) as ephemeris_start_time:
+            ephemeris_start_time.return_value = 12345
             assert self.driver.ephemeris_start_time == 12345.193
-            scs2e.assert_called_with(-203, '488002612:246')
 
     def test_usgscsm_distortion_model(self):
-        with patch('ale.drivers.dawn_drivers.spice.gdpool', return_value=np.array([12345])) as gdpool, \
-             patch('ale.drivers.dawn_drivers.spice.bods2c', return_value=54321) as bods2c:
+        with patch.object(DawnFcPds3NaifSpiceDriver, 'odtk', new_callable=PropertyMock) as odtk:
+            odtk.return_value = [12345]
             dist = self.driver.usgscsm_distortion_model
             assert dist['dawnfc']['coefficients'] == [12345]
-            bods2c.assert_called_with('DAWN_FC2_FILTER_6')
-            gdpool.assert_called_with('INS54321_RAD_DIST_COEFF', 0, 1)
 
     def test_focal2pixel_samples(self):
-        with patch('ale.drivers.dawn_drivers.spice.gdpool', return_value=np.array([1000])) as gdpool, \
-             patch('ale.drivers.dawn_drivers.spice.bods2c', return_value=54321) as bods2c:
+        with patch.object(ale.drivers.dawn_drivers.NaifSpice, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.dawn_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_PIXEL_SIZE": [1000]}
             assert self.driver.focal2pixel_samples == [0, 1, 0]
-            bods2c.assert_called_with('DAWN_FC2_FILTER_6')
-            gdpool.assert_called_with('INS54321_PIXEL_SIZE', 0, 1)
 
     def test_focal2pixel_lines(self):
-        with patch('ale.drivers.dawn_drivers.spice.gdpool', return_value=np.array([1000])) as gdpool, \
-             patch('ale.drivers.dawn_drivers.spice.bods2c', return_value=54321) as bods2c:
+        with patch.object(ale.drivers.dawn_drivers.NaifSpice, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.dawn_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_PIXEL_SIZE": [1000]}
             assert self.driver.focal2pixel_lines == [0, 0, 1]
-            bods2c.assert_called_with('DAWN_FC2_FILTER_6')
-            gdpool.assert_called_with('INS54321_PIXEL_SIZE', 0, 1)
 
     def sensor_model_version(self):
         assert self.driver.sensor_model_version == 2
 
     def test_detector_center_sample(self):
-        with patch('ale.drivers.dawn_drivers.spice.gdpool', return_value=np.array([12345, 100])) as gdpool, \
-             patch('ale.drivers.dawn_drivers.spice.bods2c', return_value=54321) as bods2c:
+        with patch.object(ale.drivers.dawn_drivers.NaifSpice, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.dawn_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_CCD_CENTER": [12345, 100]}
             assert self.driver.detector_center_sample == 12345.5
-            bods2c.assert_called_with('DAWN_FC2_FILTER_6')
-            gdpool.assert_called_with('INS54321_CCD_CENTER', 0, 2)
 
     def test_detector_center_line(self):
-        with patch('ale.drivers.dawn_drivers.spice.gdpool', return_value=np.array([12345, 100])) as gdpool, \
-             patch('ale.drivers.dawn_drivers.spice.bods2c', return_value=54321) as bods2c:
+        with patch.object(ale.drivers.dawn_drivers.NaifSpice, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.dawn_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_CCD_CENTER": [12345, 100]}
             assert self.driver.detector_center_line == 100.5
-            bods2c.assert_called_with('DAWN_FC2_FILTER_6')
-            gdpool.assert_called_with('INS54321_CCD_CENTER', 0, 2)
 
 # ========= Test dawn fc isis3label and naifspice driver =========
 class test_dawn_fc_isis3_naif(unittest.TestCase):
@@ -169,9 +166,9 @@ class test_dawn_fc_isis3_naif(unittest.TestCase):
         assert self.driver.target_name == 'CERES'
 
     def test_ephemeris_start_time(self):
-        with patch('ale.drivers.dawn_drivers.spice.scs2e', return_value=12345) as scs2e:
+        with patch.object(ale.drivers.dawn_drivers.NaifSpice, 'ephemeris_start_time', new_callable=PropertyMock) as ephemeris_start_time:
+            ephemeris_start_time.return_value = 12345
             assert self.driver.ephemeris_start_time == 12345.193
-            scs2e.assert_called_with(-203, '488002612:246')
 
 
 # ========= Test dawn vir isis3label and naifspice driver =========
@@ -190,19 +187,22 @@ class test_dawn_vir_isis3_naif(unittest.TestCase):
         np.testing.assert_array_equal(self.driver.line_exposure_duration, [0.5])
 
     def test_focal_length(self):
-        with patch('ale.drivers.dawn_drivers.spice.gdpool', return_value=[152.0]) as gdpool:
-             assert self.driver.focal_length == 152.0
+        with patch('ale.drivers.dawn_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            naif_keywords.return_value = {"INS-203213_FOCAL_LENGTH": 152.0}
+            assert self.driver.focal_length == 152.0
 
     def test_ikid(self):
         assert self.driver.ikid == -203213
 
     def test_sensor_frame_id(self):
-        ale.spice_root = "/foo/bar"
-        assert self.driver.sensor_frame_id == -203223
+        with patch('ale.drivers.dawn_drivers.NaifSpice.kernels', return_value=[]) as kernels:
+            ale.spice_root = "/foo/bar"
+            assert self.driver.sensor_frame_id == -203223
+            ale.spice_root = None
 
     def test_line_scan_rate(self):
         with patch('ale.drivers.dawn_drivers.read_table_data', return_value=12345) as read_table_data, \
-             patch('ale.drivers.dawn_drivers.spice.scs2e', return_value=362681649.6134113) as scs2e, \
+             patch('ale.drivers.dawn_drivers.pyspiceql.strSclkToEt', return_value=[362681633.8634121]) as strSclkToEt, \
              patch('ale.drivers.dawn_drivers.parse_table', return_value={'ScetTimeClock': ['362681634.09', '362681650.09', '362681666.09'], \
                                                                 'ShutterStatus': ['closed', 'open', 'open'], \
                                                                 'MirrorSin': [0.066178, -0.037118, -0.037118], \
@@ -224,7 +224,7 @@ class test_dawn_vir_isis3_naif(unittest.TestCase):
 
     def test_hk_ephemeris_time(self):
         with patch('ale.drivers.dawn_drivers.read_table_data', return_value=12345) as read_table_data, \
-             patch('ale.drivers.dawn_drivers.spice.scs2e', return_value=362681633.8634121) as scs2e, \
+             patch('ale.drivers.dawn_drivers.pyspiceql.strSclkToEt', return_value=[362681633.8634121]) as strSclkToEt, \
              patch('ale.drivers.dawn_drivers.parse_table', return_value={'ScetTimeClock': ['362681634.09', '362681650.09', '362681666.09'], \
                                                                 'ShutterStatus': ['closed', 'open', 'open'], \
                                                                 'MirrorSin': [0.066178, -0.037118, -0.037118], \
@@ -234,7 +234,7 @@ class test_dawn_vir_isis3_naif(unittest.TestCase):
 
     def test_ephemeris_start_time(self):
         with patch('ale.drivers.dawn_drivers.read_table_data', return_value=12345) as read_table_data, \
-             patch('ale.drivers.dawn_drivers.spice.scs2e', return_value=362681633.8634121) as scs2e, \
+             patch('ale.drivers.dawn_drivers.pyspiceql.strSclkToEt', return_value=[362681633.8634121]) as strSclkToEt, \
              patch('ale.drivers.dawn_drivers.parse_table', return_value={'ScetTimeClock': ['362681634.09', '362681650.09', '362681666.09'], \
                                                                 'ShutterStatus': ['closed', 'open', 'open'], \
                                                                 'MirrorSin': [0.066178, -0.037118, -0.037118], \
@@ -244,7 +244,7 @@ class test_dawn_vir_isis3_naif(unittest.TestCase):
 
     def test_ephemeris_stop_time(self):
         with patch('ale.drivers.dawn_drivers.read_table_data', return_value=12345) as read_table_data, \
-             patch('ale.drivers.dawn_drivers.spice.scs2e', return_value=362682578.1133645) as scs2e, \
+             patch('ale.drivers.dawn_drivers.pyspiceql.strSclkToEt', return_value=[362682578.1133645]) as strSclkToEt, \
              patch('ale.drivers.dawn_drivers.parse_table', return_value={'ScetTimeClock': ['362681634.09', '362681650.09', '362681666.09'], \
                                                                 'ShutterStatus': ['closed', 'open', 'open'], \
                                                                 'MirrorSin': [0.066178, -0.037118, -0.037118], \
@@ -256,6 +256,8 @@ class test_dawn_vir_isis3_naif(unittest.TestCase):
         assert self.driver.is_calibrated == False
 
     def test_has_articulation_kernel(self):
-        ale.spice_root = "/foo/bar"
-        assert self.driver.has_articulation_kernel == False
+        with patch('ale.drivers.dawn_drivers.NaifSpice.kernels', return_value=[]) as kernels:
+            ale.spice_root = "/foo/bar"
+            assert self.driver.has_articulation_kernel == False
+            ale.spice_root = None
 

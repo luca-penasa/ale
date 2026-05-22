@@ -1,11 +1,15 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
-from numpy.polynomial.polynomial import polyval, polyder
+from numpy.polynomial.polynomial import polyval
 import networkx as nx
 from networkx.algorithms.shortest_paths.generic import shortest_path
 
-import spiceypy as spice
+import pyspiceql
 
 from ale.rotation import ConstantRotation, TimeDependentRotation
+from ale import util
+from ale import logger
 
 def create_rotations(rotation_table):
     """
@@ -40,7 +44,7 @@ def create_rotations(rotation_table):
                            rotation_table['AV2'],
                            rotation_table['AV3']]).T
         else:
-            av = None
+            av = []
         time_dep_rot = TimeDependentRotation(quats,
                                              rotation_table['ET'],
                                              root_frame,
@@ -95,26 +99,28 @@ class FrameChain(nx.DiGraph):
                      A of ephemeris times that need to be rotated for each set
                      of frame rotations in the frame chain
     """
+    def __init__(self, use_web=False, search_kernels=False, incoming_graph_data=None, **attr):
+        super().__init__(incoming_graph_data, **attr)
+        self.use_web = use_web
+        self.search_kernels = search_kernels
+
     @classmethod
-    def from_spice(cls, sensor_frame, target_frame, center_ephemeris_time, ephemeris_times=[], nadir=False, exact_ck_times=False, inst_time_bias=0):
-        frame_chain = cls()
-        sensor_times = []
+    def from_spice(cls, sensor_frame, target_frame, center_ephemeris_time, 
+                                                    ephemeris_times=[], 
+                                                    nadir=False, 
+                                                    exact_ck_times=False,
+                                                    inst_time_bias=0,
+                                                    use_web=False, 
+                                                    search_kernels=False, 
+                                                    mission=""):
+        frame_chain = cls(use_web, search_kernels)
         # Default assume one time
-        target_times = np.asarray(ephemeris_times)
+        target_times = ephemeris_times
         if len(target_times) > 1:
-            target_times = np.asarray([ephemeris_times[0], ephemeris_times[-1]])
-
-        if exact_ck_times and len(ephemeris_times) > 1 and not nadir:
-            try:
-                sensor_times = cls.extract_exact_ck_times(ephemeris_times[0] + inst_time_bias, ephemeris_times[-1] + inst_time_bias, sensor_frame)
-            except Exception as e:
-                pass
-
-        if (len(sensor_times) == 0):
-            sensor_times = np.array(ephemeris_times)
-
-        sensor_time_dependent_frames, sensor_constant_frames = cls.frame_trace(sensor_frame, center_ephemeris_time, nadir)
-        target_time_dependent_frames, target_constant_frames = cls.frame_trace(target_frame, center_ephemeris_time)
+            target_times = [ephemeris_times[0], ephemeris_times[-1]]
+        frames = frame_chain.frame_trace(center_ephemeris_time, sensor_frame, target_frame, nadir, mission)
+        sensor_time_dependent_frames, sensor_constant_frames = frames[0]
+        target_time_dependent_frames, target_constant_frames = frames[1]
 
         sensor_time_dependent_frames = list(zip(sensor_time_dependent_frames[:-1], sensor_time_dependent_frames[1:]))
         constant_frames = list(zip(sensor_constant_frames[:-1], sensor_constant_frames[1:]))
@@ -123,19 +129,40 @@ class FrameChain(nx.DiGraph):
 
         constant_frames.extend(target_constant_frames)
 
-        frame_chain.compute_time_dependent_rotations(sensor_time_dependent_frames, sensor_times, inst_time_bias)
-        frame_chain.compute_time_dependent_rotations(target_time_dependent_frames, target_times, 0)
+        # Do this call so we know if we can get exact ck times for our data
+        if exact_ck_times and len(ephemeris_times) > 1 and not nadir:
+            try:
+                times = pyspiceql.extractExactCkTimes(observStart=ephemeris_times[0] + inst_time_bias, 
+                                                      observEnd=ephemeris_times[-1] + inst_time_bias, 
+                                                      targetFrame=sensor_frame,
+                                                      mission=mission,
+                                                      ckQualities=["reconstructed"],
+                                                      searchKernels=frame_chain.search_kernels,
+                                                      useWeb=frame_chain.use_web)[0]
 
-        for s, d in constant_frames:
-            quats = np.zeros(4)
-            rotation_matrix = spice.pxform(spice.frmnam(s), spice.frmnam(d), ephemeris_times[0])
-            quat_from_rotation = spice.m2q(rotation_matrix)
-            quats[:3] = quat_from_rotation[1:]
-            quats[3] = quat_from_rotation[0]
+                if len(times) == 0:
+                    logger.debug(f"No exact CK times found")
+                    exact_ck_times = False
+                else:
+                    logger.debug(f"Found {len(times)} exact CK time(s) for {sensor_frame}")
 
-            rotation = ConstantRotation(quats, s, d)
+            except Exception as e:
+                exact_ck_times = False
+                logger.debug(f"Failed to extract exact ck times: {e}")
 
-            frame_chain.add_edge(rotation=rotation)
+        
+        # Build graph async
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                
+                # Add all time dependent frame edges to the graph
+                executor.submit(frame_chain.generate_rotations, sensor_time_dependent_frames, ephemeris_times, inst_time_bias, TimeDependentRotation, sensor_frame, frame_chain, nadir, exact_ck_times, mission),
+                executor.submit(frame_chain.generate_rotations, target_time_dependent_frames, target_times, 0, TimeDependentRotation, sensor_frame, frame_chain, nadir, False, mission),
+                
+                # Add all constant frames to the graph
+                executor.submit(frame_chain.generate_rotations, constant_frames, [ephemeris_times[0]], 0, ConstantRotation, sensor_frame, frame_chain, nadir, False, mission)
+            ]
+            results = [future.result() for future in futures]
 
         return frame_chain
     
@@ -193,125 +220,83 @@ class FrameChain(nx.DiGraph):
                                 "You need to update.")
         
         return matrix, frame_code, frame_type
-    
 
 
     @staticmethod
-    def frame_trace(reference_frame, ephemeris_time, nadir=False):
-        if nadir:
-            return [], []
-
-        frame_codes = [reference_frame]
-
-        print(frame_codes, reference_frame)
-        _, frame_type, _ = spice.frinfo(reference_frame)
+    def _frame_trace_spice(frame_code, ephemeris_time):
+        """
+        Fallback frame trace using direct SPICE calls.
+        Handles frame type 6 (switch frames) which pyspiceql does not yet support.
+        Returns [time_dependent_frames, constant_frames] matching pyspiceql.frameTrace output.
+        """
+        frame_codes = [frame_code]
+        _, frame_type, _ = spice.frinfo(frame_code)
         frame_types = [frame_type]
 
-
-        while(frame_codes[-1] != 1):
-
+        while frame_codes[-1] != 1:
             current_frame = frame_codes[-1]
             try:
-                matrix, frame_code, frame_type = FrameChain.resolve_parent_frame_matrix(current_frame, ephemeris_time)
-                print(f'Frame {current_frame} is of type {frame_type} and is attached to {frame_code}')
+                _, frame_code, _ = FrameChain.resolve_parent_frame_matrix(current_frame, ephemeris_time)
             except Exception as e:
-                print('something bad occured within resolution of parent')
-                print(e)
+                logger.debug(f'Frame trace stopped at frame {current_frame}: {e}')
                 break
-            
+            if frame_code is None:
+                break
             _, frame_type, _ = spice.frinfo(frame_code)
-            print(matrix, frame_code, frame_type)
             frame_codes.append(frame_code)
             frame_types.append(frame_type)
+
+        constant_frames = []
+        while frame_codes:
+            if frame_types[0] == 4 or frame_types[0] == 6:
+                constant_frames.append(frame_codes.pop(0))
+                frame_types.pop(0)
+            else:
+                break
+
+        time_dependent_frames = []
+        if len(constant_frames) != 0:
+            time_dependent_frames.append(constant_frames[-1])
+        while frame_codes:
+            time_dependent_frames.append(frame_codes.pop(0))
+
+        return [time_dependent_frames, constant_frames]
+
+
+    def frame_trace(self, time, sensorFrame, targetFrame, nadir=False, mission=""):
+        jobs = []
+        if not nadir:
+            jobs.append({"et": time, 
+                        "initialFrame": sensorFrame,
+                        "mission": mission,
+                        "ckQualities" : ["reconstructed"],
+                        "spkQualities" : ["reconstructed"],
+                        "searchKernels": self.search_kernels,
+                        "useWeb": self.use_web})
+        jobs.append({"et": time, 
+                     "initialFrame": targetFrame,
+                     "mission": mission,
+                     "ckQualities" : ["reconstructed"],
+                     "spkQualities" : ["reconstructed"],
+                     "searchKernels": self.search_kernels,
+                     "useWeb": self.use_web})
         
+        logger.debug(f"Frame Trace Jobs: {jobs}")
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(pyspiceql.frameTrace, **job) for job in jobs]
+                results = [future.result()[0] for future in futures]
+        except Exception as e:
+            logger.debug(f"pyspiceql.frameTrace failed (possibly switch frame type 6), "
+                         f"falling back to direct SPICE: {e}")
+            results = []
+            if not nadir:
+                results.append(FrameChain._frame_trace_spice(sensorFrame, time))
+            results.append(FrameChain._frame_trace_spice(targetFrame, time))
 
-        print(f'All frame codes are {frame_codes} for types {frame_types}')
-        constant_frames = []
-        while frame_codes:
-            print(f'Comparing frame type {frame_types[0]}')
-            if frame_types[0] == 4 or frame_types[0] == 6:
-                print(f'Frame is either 4 or 6. adding as constnat')
-                constant_frames.append(frame_codes.pop(0))
-                frame_types.pop(0)
-            else:
-                break
-
-        time_dependent_frames = []
-        if len(constant_frames) != 0:
-            time_dependent_frames.append(constant_frames[-1])
-
-        while frame_codes:
-            time_dependent_frames.append(frame_codes.pop(0))
-
-
-        time_dependent_frames_names = [spice.frmnam(id) for id in time_dependent_frames] 
-        constant_frames_names = [spice.frmnam(id) for id in constant_frames] 
-
-        print(f'Time dependent frames are {time_dependent_frames} -> {time_dependent_frames_names}')
-        print(f'Constant frames are {constant_frames} -> {constant_frames_names}')
-
-        return time_dependent_frames, constant_frames
-    
-
-    @staticmethod
-    def frame_trace_old(reference_frame, ephemeris_time, nadir=False):
         if nadir:
-            return [], []
-
-        frame_codes = [reference_frame]
-        _, frame_type, _ = spice.frinfo(frame_codes[-1])
-        frame_types = [frame_type]
-
-
-        while(frame_codes[-1] != 1):
-            try:
-                center, frame_type, frame_type_id = spice.frinfo(frame_codes[-1])
-            except Exception as e:
-                print(e)
-                break
-
-            if frame_type == 1 or frame_type == 2:
-                frame_code = 1
-
-            elif frame_type == 3:
-                try:
-                    matrix, frame_code = spice.ckfrot(frame_type_id, ephemeris_time)
-                except:
-                    raise Exception(f"The ck rotation from frame {frame_codes[-1]} can not " +
-                                    f"be found due to no pointing available at requested time {ephemeris_time} " +
-                                     "or a problem with the frame")
-            elif frame_type == 4:
-                try:
-                    matrix, frame_code = spice.tkfram(frame_type_id)
-                except:
-                    raise Exception(f"The tk rotation from frame {frame_codes[-1]} can not " +
-                                     "be found")
-            elif frame_type == 5:
-                matrix, frame_code = spice.zzdynrot(frame_type_id, center, ephemeris_time)
-
-            else:
-                raise Exception(f"The frame {frame_codes[-1]} has a type {frame_type_id} " +
-                                  "not supported by your version of Naif Spicelib. " +
-                                  "You need to update.")
-
-            frame_codes.append(frame_code)
-            frame_types.append(frame_type)
-        constant_frames = []
-        while frame_codes:
-            if frame_types[0] == 4 or frame_types[0] == 6:
-                constant_frames.append(frame_codes.pop(0))
-                frame_types.pop(0)
-            else:
-                break
-
-        time_dependent_frames = []
-        if len(constant_frames) != 0:
-            time_dependent_frames.append(constant_frames[-1])
-
-        while frame_codes:
-            time_dependent_frames.append(frame_codes.pop(0))
-
-        return time_dependent_frames, constant_frames
+            results.insert(0, ([[], []]))
+        return results
 
     @classmethod
     def from_isis_tables(cls, *args, inst_pointing={}, body_orientation={}, **kwargs):
@@ -397,115 +382,10 @@ class FrameChain(nx.DiGraph):
 
         return None
 
-    @staticmethod
-    def extract_exact_ck_times(observStart, observEnd, targetFrame):
+
+    def generate_rotations(self, frames, times, time_bias, rotation_type, exact_ck_frame, frame_chain, nadir, exact_ck_times, mission=""):
         """
-        Generates all exact ephemeris data assocaited with a specific frame as
-        defined by targetFrame, between a start and end interval defined by 
-        observStart and observEnd
-
-        Parameters
-        ----------
-        observStart : float
-                      Start time in ephemeris time to extract ephemeris data from
-
-        observEnd : float
-                    End time in ephemeris time to extract ephemeris data to
-
-        targetFrame : int
-                      Target reference frame to get ephemeris data in
-
-        Returns
-        -------
-        times : list
-                A list of times where exact ephemeris data where recorded for
-                the targetFrame
-        """
-        times = []
-
-        FILESIZ = 128;
-        TYPESIZ = 32;
-        SOURCESIZ = 128;
-
-        currentTime = observStart
-
-        count = spice.ktotal("ck")
-        if (count > 1):
-            msg = "Unable to get exact CK record times when more than 1 CK is loaded, Aborting"
-            raise Exception(msg)
-
-        _, _, _, handle = spice.kdata(0, "ck", FILESIZ, TYPESIZ, SOURCESIZ)
-        spice.dafbfs(handle)
-        found = spice.daffna()
-        spCode = int(targetFrame / 1000) * 1000
-
-        while found:
-            observationSpansToNextSegment = False
-            summary = spice.dafgs()
-            dc, ic = spice.dafus(summary, 2, 6)
-
-            # Don't read type 5 ck here
-            if ic[2] == 5:
-                break
-
-            if (ic[0] == spCode and ic[2] == 3):
-                segStartEt = spice.sct2e(int(spCode/1000), dc[0])
-                segStopEt = spice.sct2e(int(spCode/1000), dc[1])
-
-                if (currentTime >= segStartEt  and  currentTime <= segStopEt):
-                    # Check for a gap in the time coverage by making sure the time span of the observation
-                    #  does not cross a segment unless the next segment starts where the current one ends
-                    if (observationSpansToNextSegment and currentTime > segStartEt):
-                        msg = "Observation crosses segment boundary--unable to interpolate pointing"
-                        raise Exception(msg)
-                    if (observEnd > segStopEt):
-                        observationSpansToNextSegment = True
-
-                    dovelocity = ic[3]
-                    end = ic[5]
-                    val = spice.dafgda(handle, int(end - 1), int(end))
-                    # int nints = (int) val[0];
-                    ninstances = int(val[1])
-                    numvel  =  dovelocity * 3
-                    quatnoff  =  ic[4] + (4 + numvel) * ninstances - 1
-                    # int nrdir = (int) (( ninstances - 1 ) / DIRSIZ); /* sclkdp directory records */
-                    sclkdp1off  =  int(quatnoff + 1)
-                    sclkdpnoff  =  int(sclkdp1off + ninstances - 1)
-                    # int start1off = sclkdpnoff + nrdir + 1;
-                    # int startnoff = start1off + nints - 1;
-                    sclkSpCode = int(spCode / 1000)
-
-                    sclkdp = spice.dafgda(handle, sclkdp1off, sclkdpnoff)
-
-                    instance = 0
-                    et = spice.sct2e(sclkSpCode, sclkdp[0])
-
-                    while (instance < (ninstances - 1)  and  et < currentTime):
-                        instance = instance + 1
-                        et = spice.sct2e(sclkSpCode, sclkdp[instance])
-
-                    if (instance > 0):
-                        instance = instance - 1
-                    et = spice.sct2e(sclkSpCode, sclkdp[instance])
-
-                    while (instance < (ninstances - 1) and et < observEnd):
-                        times.append(et)
-                        instance = instance + 1
-                        et = spice.sct2e(sclkSpCode, sclkdp[instance])
-                    times.append(et)
-
-                    if not observationSpansToNextSegment:
-                        break
-                    else:
-                        currentTime = segStopEt
-            spice.dafcs(handle)     # Continue search in daf last searched
-            found = spice.daffna()   # Find next forward array in current daf
-
-        return times
-
-    def compute_time_dependent_rotations(self, frames, times, time_bias):
-        """
-        Computes the time dependent rotations based on a list of tuples that define the
+        Computes the rotations based on a list of tuples that define the
         relationships between frames as (source, destination) and a list of times to
         compute the rotation at. The rotations are then appended to the frame chain
         object
@@ -516,25 +396,75 @@ class FrameChain(nx.DiGraph):
         times : list
                 A list of times to compute the rotation at
         """
+        # Convert list of np.floats to ndarray
+        if isinstance(times, list) and isinstance(times[0], np.floating):
+            times = np.array(times)
+        
+        start_et = min(times)
+        stop_et = max(times) 
+        quats_and_avs_per_frame = []
 
+        logger.debug(f"Generate rotation times: {times}")
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for s, d in frames:
+                if exact_ck_times and len(times) > 1:
+                    function_args = {"startEt": start_et+time_bias, 
+                                     "stopEt": stop_et+time_bias, 
+                                     "toFrame": d, 
+                                     "refFrame": s, 
+                                     "exactCkFrame": exact_ck_frame, 
+                                     "mission": mission, 
+                                     "ckQualities" : ["reconstructed"],
+                                     "searchKernels": self.search_kernels, 
+                                     "useWeb": self.use_web}
+                    logger.debug(f"Exact CK times function args: {function_args}")
+                    futures.append(executor.submit(pyspiceql.getExactTargetOrientations, **function_args))
+                else:
+                    function_args = {"startEt": start_et,
+                                     "stopEt": stop_et,
+                                     "numRecords": len(times),
+                                     "ckQualities" : ["reconstructed"],
+                                     "toFrame": d, 
+                                     "refFrame": s, 
+                                     "mission": mission,
+                                     "searchKernels": self.search_kernels, 
+                                     "useWeb": self.use_web}
+                    logger.debug(f"Non-exact CK times function args: {function_args}")
+                    futures.append(executor.submit(pyspiceql.getTargetOrientationsRanged, **function_args))
 
-        print(f'Computing time dependent rotations for frames {frames}')
-        for s, d in frames:
+            quats_and_avs_per_frame = np.array([future.result()[0] for future in futures])
+            logger.debug(f"Returned Quats and AVs per frame: {quats_and_avs_per_frame}")
+
+        if exact_ck_times and len(times) > 1 and len(frames) > 0:
+            times = [quat_av[0] for quat_av in quats_and_avs_per_frame[0]]
+            quats_and_avs_per_frame = [quats_and_avs[:, 1:] for quats_and_avs in quats_and_avs_per_frame]
+
+        for i, frame in enumerate(frames):
+            quats_and_avs = quats_and_avs_per_frame[i]
+            logger.debug(f"Quats and AVs per frame: {quats_and_avs}")
             quats = np.zeros((len(times), 4))
             avs = []
-            for j, time in enumerate(times):
-                try:
-                    state_matrix = spice.sxform(spice.frmnam(s), spice.frmnam(d), time)
-                    rotation_matrix, av = spice.xf2rav(state_matrix)
-                    avs.append(av)
-                except:
-                    rotation_matrix = spice.pxform(spice.frmnam(s), spice.frmnam(d), time)
-                quat_from_rotation = spice.m2q(rotation_matrix)
-                quats[j,:3] = quat_from_rotation[1:]
-                quats[j,3] = quat_from_rotation[0]
+            _quats = np.asarray(quats_and_avs)[:, 0:4]
+            logger.debug(f"Quats: {_quats}")
+            for j, quat in enumerate(_quats):
+                quats[j,:3] = quat[1:]
+                quats[j, 3] = quat[0]
 
-            if not avs:
-                avs = None
+            if (len(quats_and_avs[0]) > 4):
+                avs = np.array(quats_and_avs)[:, 4:]
+
             biased_times = [time - time_bias for time in times]
-            rotation = TimeDependentRotation(quats, biased_times, s, d, av=avs)
+            if rotation_type == TimeDependentRotation:
+                logger.debug(f"Time Dependent Quats: {quats}")
+                logger.debug(f"First 10 Biased times: {biased_times[:10]}...")
+                logger.debug(f"Frame: {frame}")
+                logger.debug(f"First 10 AVs: {avs[:10]} ...")
+                rotation = TimeDependentRotation(quats, biased_times, frame[0], frame[1], av=avs)
+            else:
+                logger.debug(f"Constant Quats: {quats}")
+                logger.debug(f"Frame: {frame}")
+                rotation = ConstantRotation(quats[0], frame[0], frame[1])
+            logger.debug(f"Rotation: {rotation}")
             self.add_edge(rotation=rotation)
+        

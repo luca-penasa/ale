@@ -5,7 +5,7 @@ import spiceypy as spice
 from importlib import reload
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch, call
 
 from conftest import get_image, get_image_label, get_isd, get_image_kernels, convert_kernels, compare_dicts
 import ale
@@ -29,11 +29,11 @@ image_dict = {
 def test_load(test_kernels, label_type, image, kernel_type):
     if(kernel_type == "naif"):
         label_file = get_image_label(image, label_type)
-        isd_str = ale.loads(label_file, props={'kernels': test_kernels})
+        isd_str = ale.loads(label_file, props={'kernels': test_kernels, 'attach_kernels': False})
         compare_isd = image_dict[image]
     else: 
         label_file = get_image(image)
-        isd_str = ale.loads(label_file)
+        isd_str = ale.loads(label_file, props={'attach_kernels': False})
         compare_isd = get_isd("messmdis_isis")
 
     isd_obj = json.loads(isd_str)
@@ -55,7 +55,8 @@ class test_pds3_naif(unittest.TestCase):
         assert self.driver.spacecraft_name == 'MESSENGER'
 
     def test_fikid(self):
-        with patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(ale.drivers.mess_drivers.NaifSpice, 'ikid',  new_callable=PropertyMock) as ikid:
+            ikid.return_value = -12345
             assert self.driver.spacecraft_name == 'MESSENGER'
 
     def test_instrument_id(self):
@@ -65,10 +66,11 @@ class test_pds3_naif(unittest.TestCase):
         assert self.driver.sampling_factor == 2
 
     def test_focal_length(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', return_value=np.array([pow(4.07, -x) for x in np.arange(6)])) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisPds3NaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_FL_TEMP_COEFFS": np.array([pow(4.07, -x) for x in np.arange(6)])}
             assert self.driver.focal_length == pytest.approx(6.0)
-            gdpool.assert_called_with('INS-12345_FL_TEMP_COEFFS', 0, 6)
 
     def test_detector_center_sample(self):
         assert self.driver.detector_center_sample == 512
@@ -80,19 +82,22 @@ class test_pds3_naif(unittest.TestCase):
         assert self.driver.sensor_model_version == 2
 
     def test_usgscsm_distortion_model(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', side_effect=[np.array([1, 2, 3, 4, 5]), np.array([-1, -2, -3, -4, -5])]) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisPds3NaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_OD_T_X": [1, 2, 3, 4, 5],
+                                          "INS-12345_OD_T_Y": [-1, -2, -3, -4, -5]}
             assert self.driver.usgscsm_distortion_model == {"transverse" : {
                                                                 "x" : [1, 2, 3, 4, 5],
                                                                 "y" : [-1, -2, -3, -4, -5]}}
 
 
-
     def test_pixel_size(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', return_value=np.array([0.1])) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisPds3NaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_PIXEL_PITCH": np.array([0.1])}
             assert self.driver.pixel_size == 0.1
-            gdpool.assert_called_with('INS-12345_PIXEL_PITCH', 0, 1)
 
 # ========= Test ISIS3 Label and NAIF Spice driver =========
 class test_isis3_naif(unittest.TestCase):
@@ -108,7 +113,7 @@ class test_isis3_naif(unittest.TestCase):
         assert self.driver.platform_name == 'MESSENGER'
 
     def test_fikid(self):
-        with patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisIsisLabelNaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid:
             assert self.driver.spacecraft_name == 'MESSENGER'
 
     def test_instrument_id(self):
@@ -118,37 +123,43 @@ class test_isis3_naif(unittest.TestCase):
         assert self.driver.sampling_factor == 2
 
     def test_focal_length(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', return_value=np.array([pow(4.07, -x) for x in np.arange(6)])) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisIsisLabelNaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_FL_TEMP_COEFFS": np.array([pow(4.07, -x) for x in np.arange(6)])}
             assert self.driver.focal_length == pytest.approx(6.0)
-            gdpool.assert_called_with('INS-12345_FL_TEMP_COEFFS', 0, 6)
 
     def test_detector_center_sample(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', return_value=np.array([512.5, 512.5, 1])) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisIsisLabelNaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_CCD_CENTER": np.array([512.5, 512.5, 1])}
             assert self.driver.detector_center_sample == 512
-            gdpool.assert_called_with('INS-12345_CCD_CENTER', 0, 3)
 
     def test_detector_center_line(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', return_value=np.array([512.5, 512.5, 1])) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisIsisLabelNaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_CCD_CENTER": np.array([512.5, 512.5, 1])}
             assert self.driver.detector_center_line == 512
-            gdpool.assert_called_with('INS-12345_CCD_CENTER', 0, 3)
 
     def test_sensor_model_version(self):
         assert self.driver.sensor_model_version == 2
 
     def test_usgscsm_distortion_model(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', side_effect=[np.array([1, 2, 3, 4, 5]), np.array([-1, -2, -3, -4, -5])]) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisIsisLabelNaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_OD_T_X": [1, 2, 3, 4, 5],
+                                          "INS-12345_OD_T_Y": [-1, -2, -3, -4, -5]}
             assert self.driver.usgscsm_distortion_model == {"transverse" : {
                                                                 "x" : [1, 2, 3, 4, 5],
                                                                 "y" : [-1, -2, -3, -4, -5]}}
 
 
-
     def test_pixel_size(self):
-        with patch('ale.drivers.mess_drivers.spice.gdpool', return_value=np.array([0.1])) as gdpool, \
-             patch('ale.base.data_naif.spice.bods2c', return_value=-12345) as bods2c:
+        with patch.object(MessengerMdisIsisLabelNaifSpiceDriver, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.mess_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -12345
+            naif_keywords.return_value = {"INS-12345_PIXEL_PITCH": np.array([0.1])}
             assert self.driver.pixel_size == 0.1
-            gdpool.assert_called_with('INS-12345_PIXEL_PITCH', 0, 1)

@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import PropertyMock, patch
+from unittest.mock import PropertyMock, patch, call
 
 import pytest
 import json
@@ -28,7 +28,7 @@ def test_galileo_load(test_kernels, label_type, kernel_type):
         isd_str = ale.loads(label_file)
         compare_isd = get_isd('galileossi_isis')
     else:
-        isd_str = ale.loads(label_file, props={'kernels': test_kernels})
+        isd_str = ale.loads(label_file, props={'kernels': test_kernels, 'attach_kernels': False})
         compare_isd = get_isd('galileossi')
 
     isd_obj = json.loads(isd_str)
@@ -42,10 +42,11 @@ class test_galileossi_isis3_naif(unittest.TestCase):
         self.driver = GalileoSsiIsisLabelNaifSpiceDriver(label)
 
     def test_odtk(self):
-        with patch('ale.base.data_naif.spice.bods2c', return_value=-77001) as bods2c, \
-             patch('ale.base.data_naif.spice.gdpool', return_value=-2.4976983626e-05) as gdpool:
+        with patch.object(ale.drivers.galileo_drivers.NaifSpice, 'ikid', new_callable=PropertyMock) as ikid, \
+             patch('ale.drivers.galileo_drivers.NaifSpice.naif_keywords', new_callable=PropertyMock) as naif_keywords:
+            ikid.return_value = -77001
+            naif_keywords.return_value = {"INS-77001_K1": -2.4976983626e-05}
             assert self.driver.odtk == -2.4976983626e-05
-            gdpool.assert_called_with("INS-77001_K1", 0, 1)
 
     def test_instrument_id(self):
         assert self.driver.instrument_id == "GLL_SSI_PLATFORM"
@@ -54,14 +55,18 @@ class test_galileossi_isis3_naif(unittest.TestCase):
         assert self.driver.sensor_name == "SOLID STATE IMAGING SYSTEM"
 
     def test_ephemeris_start_time(self):
-        with patch('ale.base.data_naif.spice.str2et', return_value=12345) as str2et:
+        with patch('ale.drivers.galileo_drivers.pyspiceql.utcToEt', return_value=[12345]) as utcToEt:
             assert self.driver.ephemeris_start_time == 12345
-            str2et.assert_called_with('1997-02-19 21:07:27.314000')
+            calls = [call(utc='1997-02-19 21:07:27.314000', searchKernels=False, useWeb=False)]
+            utcToEt.assert_has_calls(calls)
+            assert utcToEt.call_count == 1
 
     def test_ephemeris_stop_time(self):
-        with patch('ale.base.data_naif.spice.str2et', return_value=12345) as str2et:
+        with patch('ale.drivers.galileo_drivers.pyspiceql.utcToEt', return_value=[12345]) as utcToEt:
             assert self.driver.ephemeris_stop_time == 12345.19583
-            str2et.assert_called_with('1997-02-19 21:07:27.314000')
+            calls = [call(utc='1997-02-19 21:07:27.314000', searchKernels=False, useWeb=False)]
+            utcToEt.assert_has_calls(calls)
+            assert utcToEt.call_count == 1
 
     def test_sensor_model_version(self):
         assert self.driver.sensor_model_version == 1

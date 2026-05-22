@@ -1,12 +1,6 @@
-from glob import glob
-import os
+from pyspiceql import pyspiceql
 
-import struct
-import pvl
-import spiceypy as spice
-import numpy as np
-
-from ale.base import Driver
+from ale.base import Driver, WrongInstrumentException
 from ale.base.data_naif import NaifSpice
 from ale.base.label_isis import IsisLabel
 from ale.base.type_sensor import Framer
@@ -34,7 +28,10 @@ class TGOCassisIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDistorti
         id_lookup = {
             'CaSSIS': 'TGO_CASSIS',
         }
-        return id_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return id_lookup[key]
 
     @property
     def ephemeris_start_time(self):
@@ -50,7 +47,9 @@ class TGOCassisIsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDistorti
         : float
           ephemeris start time of the image.
         """
-        return spice.utc2et(self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"))
+        if not hasattr(self, "_ephemeris_start_time"):
+            self._ephemeris_start_time = pyspiceql.utcToEt(utc=self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"), searchKernels=self.search_kernels, useWeb=self.use_web)
+        return self._ephemeris_start_time
 
     @property
     def sensor_frame_id(self):

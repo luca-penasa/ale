@@ -34,10 +34,92 @@ release.
 -->
 
 ## [Unreleased]
+
+## [1.2.0] - 2026-05-20
+
+### Added
+
+- Added a return_driver boolean flag to ale.drivers.load to specify the return of a driver instead of an ISD. [#700](https://github.com/DOI-USGS/ale/pull/700)
+- Added the ability to reduce linescan ISD ephemeris sampling from one-per-line to every Nth line, significantly reducing ISD file sizes and load times for large sensors. Configurable via `reduction` and `ephem_sample_rate` props. [#677](https://github.com/DOI-USGS/ale/pull/677)
+- Added an ISIS-label/NAIF-SPICE driver for KPLO ShadowCam. [#709](https://github.com/DOI-USGS/ale/pull/709)
+
+### Changed
+- Changed chandrayaan2 drivers to reduce the number of ephemeris times obtained, applying a linear reduction. [#707](https://github.com/DOI-USGS/ale/pull/707)
+- Throw error when input file does not exist. [#692](https://github.com/DOI-USGS/ale/pull/692)
+- Read in ISIS SPICE Tables from GDAL .tiff [#697](https://github.com/DOI-USGS/ale/pull/697)
+- Changed all `spiceql_call` functions to use pyspiceql [#695](https://github.com/DOI-USGS/ale/pull/695)
+
+### Fixed
+- Fixed Eigen 5.x compatibility by removing version constraint in CMakeLists.txt [#677](https://github.com/DOI-USGS/ale/pull/677)
+- Fixed C++ load(s) call failing when called again after throwing an error [#696](https://github.com/DOI-USGS/ale/pull/696)
+- Fixed misleading "No Such Driver for Label" from `isd_generate` when ALESPICEROOT is unset and no kernel-source flag is given. The CLI now exits early with a message naming ALESPICEROOT and the alternative flags (`--kernel`/`--search-kernels`/`--use-web-spice`/`--only-isis-spice`). [#704](https://github.com/DOI-USGS/ale/pull/704)
+- Fixed metakernels with relative `PATH_VALUES` (e.g. `..`) silently failing when invoked from a working directory other than the metakernel's own directory. `NaifSpice.__enter__` now `chdir`s to each metakernel's directory around `pyspiceql.load`, then restores the prior working directory.
+
+## [1.1.3] - 2026-03-12
+
+### Fixed
+- Fixed the `props` checker to catch string "null" [#690](https://github.com/DOI-USGS/ale/pull/690)
+
+## [1.1.2] - 2026-03-03
+
+### Added
+- Added better logging when running verbose on ale::load [#688](https://github.com/DOI-USGS/ale/pull/688)
+
+## [1.1.1] - 2026-02-20
+
+### Fixed
+- Adjust instrument pointing information to match ISIS [#686](https://github.com/DOI-USGS/ale/pull/686)
+
+## [1.1.0] - 2026-02-17
+
+### Fixed
+- Fixed ephemeris stop time in Chandrayaan2 TMC2 driver. [#681](https://github.com/DOI-USGS/ale/pull/681/changes)
+
+- Fixed focal plane to detector lines/samples as well as rely on IAK for rotation corrections in Chandrayaan2 OHRC driver. [#682](https://github.com/DOI-USGS/ale/pull/682)
+
+### Added
+- Added TMC_FORE, TMC_NADIR, and TMC_AFT instrument IDs to Chandrayaan2 driver. [#678](https://github.com/DOI-USGS/ale/pull/678)
+
+- Added optional boolean flag `remove_kernels` to the `props` dict in the `loads()` func to allow the user to add the `kernels` key in the output ISD. Added the `misc` kernel key for user-entered kernels. Format the kernels value to always be dict type in ISD generation. [#675](https://github.com/DOI-USGS/ale/pull/675)
+
+- Added support for loading ISIS metadata from GDAL drivers when using GDAL 3.12.0 or newer. [#676](https://github.com/DOI-USGS/ale/pull/676)
+
+### Changed
+- Sets ALE's default log level to ERROR instead of INFO, which was too verbose. [#679](https://github.com/DOI-USGS/ale/pull/679)
+
+## [1.0.2]
+
+- Fixed bug where generic CH2 kernels were using for TMC-2 [#672](https://github.com/DOI-USGS/ale/pull/672)
+
+## [1.0.1]
+
+### Fixed 
+- Fixed bug in CH-2 drivers where SpiceQL calls did not pass search for kernels or use web parameters.[#668](https://github.com/DOI-USGS/ale/pull/668)
+
+### Changed
+- Changed all `getTargetStates` and `getTargetOrientations` calls to use a start, stop and number of records rather than passing all ephemeris times [#667](https://github.com/DOI-USGS/ale/pull/667)
+- Changed all `getTargetStates` and `getTargetOrientations` calls to only look for "reconstructed" cks and spks [#667](https://github.com/DOI-USGS/ale/pull/667)
+
+## [1.0] - 2025-07-15
+### Changed
+- Changed velocities to be after positions in ALE unified formatter for easier comparison with older ISDs [#650](https://github.com/DOI-USGS/ale/pull/650)
+- Changed SpiceQL pin to >=1.2.1 [#660](https://github.com/DOI-USGS/ale/pull/660)
+- Changed `get_kernels_from_isis_pvl` to add any dsks from the ISIS kernels group to its kernel output [#627](https://github.com/DOI-USGS/ale/issues/627)
+- Changed `isd_generate` to access SpiceQL [#656](https://github.com/DOI-USGS/ale/pull/656)
+
+### Added
+- Added Chandrayaan2 OHRC driver and tests [#654](https://github.com/DOI-USGS/ale/pull/654)
+- Added MEX SRC IsisLabelNaifSpice driver and tests [#647](https://github.com/DOI-USGS/ale/pull/647)
+- Added SpiceQL as a dependency [#621](https://github.com/DOI-USGS/ale/pull/621)
+- Added Chandrayaan2 TMC driver and tests [#652](https://github.com/DOI-USGS/ale/pull/652)
+
+## [0.11.0] - 2025-04-11
+
 ### Changed
 - Enabled Hayabusa2 drivers [#596](https://github.com/DOI-USGS/ale/pull/596)
 - Enabled Juno drivers [#597](https://github.com/DOI-USGS/ale/pull/597)
 - Enabled Odyssey drivers [#582](https://github.com/DOI-USGS/ale/pull/582)
+- Disabled OSIRIS-REX drivers [$645](https://github.com/DOI-USGS/ale/pull/645)
 
 ### Added
 - Apollo Metric drivers, tests, and data [#533](https://github.com/DOI-USGS/ale/pull/533)
@@ -48,6 +130,7 @@ release.
 
 ### Changed
 - Changed how push frame sensor drivers compute the `ephemeris_time` property [#595](https://github.com/DOI-USGS/ale/pull/595)
+- Changed the number of `ephemeris_time` values for pushframe drivers from the number of framelets to the number of lines [#643](https://github.com/DOI-USGS/ale/pull/643)
 
 ### Fixed
 - Fixed landed sensors to correctly project locally [#590](https://github.com/DOI-USGS/ale/pull/590)
@@ -58,6 +141,9 @@ release.
 - Fixed incorrect distortion look up in Orex camera when working with PolyCam images [#583](https://github.com/DOI-USGS/ale/pull/583)
 - Brought timing in line with ISIS for the KaguyaMiIsisLabelNaifSpiceDriver [#599](https://github.com/DOI-USGS/ale/pull/599)
 - Brought timing in line with ISIS for the MroMarciIsisLabelNaifSpiceDriver [#600](https://github.com/DOI-USGS/ale/pull/600)
+- Fixed a bug in which quaternions would flip sign in a way that caused interpolation errors [#603](https://github.com/DOI-USGS/ale/issues/603)
+- Cast SpkTableOriginalSize as an integer from a float as np.linspace() expects an integer for the `num` param.
+- Fixed MEX SRC Pds3LabelNaifSpice driver ephemeris times to match ISIS [#647](https://github.com/DOI-USGS/ale/pull/647)
 
 ## [0.10.0] - 2024-01-08 
 

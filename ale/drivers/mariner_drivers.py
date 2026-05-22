@@ -1,9 +1,12 @@
-import spiceypy as spice
+import pyspiceql
+
+from ale.base import spiceql_mission_map
 from ale.base.data_naif import NaifSpice
 from ale.base.label_isis import IsisLabel
 from ale.base.type_sensor import Framer
 from ale.base.type_distortion import NoDistortion
 from ale.base.base import Driver
+from ale.base import WrongInstrumentException
 
 class Mariner10IsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDistortion, Driver):
     
@@ -21,7 +24,10 @@ class Mariner10IsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDistorti
             "M10_VIDICON_A": "M10_SPACECRAFT",
             "M10_VIDICON_B": "M10_SPACECRAFT"
         }
-        return inst_id_lookup[super().instrument_id]
+        key = super().instrument_id
+        if key not in inst_id_lookup:
+            raise WrongInstrumentException(f"Unknown instrument id: {key}.")
+        return inst_id_lookup[key]
 
     @property
     def sensor_model_version(self):
@@ -81,7 +87,9 @@ class Mariner10IsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDistorti
         : float
           start time
         """
-        return spice.str2et(self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f")) - (self.exposure_duration / 2.0)
+        if not hasattr(self, "_ephemeris_start_time"):
+            self._ephemeris_start_time = pyspiceql.utcToEt(utc=self.utc_start_time.strftime("%Y-%m-%d %H:%M:%S.%f"), searchKernels=self.search_kernels, useWeb=self.use_web)[0]  - (self.exposure_duration / 2.0)
+        return self._ephemeris_start_time
     
     @property
     def light_time_correction(self):
@@ -97,4 +105,16 @@ class Mariner10IsisLabelNaifSpiceDriver(Framer, IsisLabel, NaifSpice, NoDistorti
           for the different options available.
         """
         return 'NONE'
+    
+    @property
+    def spiceql_mission(self):
+        """
+        Access the mapping between a SpiceQL "mission" and the driver.
+        The mapping can be found under ale.base.__init__.py
+
+        See Also
+        --------
+        ale.base.__init__.py
+        """
+        return spiceql_mission_map[super().instrument_id]
     
