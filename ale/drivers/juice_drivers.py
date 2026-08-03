@@ -502,73 +502,167 @@ class JuicePds4LabelNaifSpiceDriverRollingShutter(RollingShutter, Framer, Pds4La
         n = self.image_lines
         return list(np.linspace(-1.0, 1.0, n))
 
-    def _jitter_fit_coeffs(self, degree=2):
+    def _jitter_fit_coeffs(self, degree=3, n_fit=81, n_validate=40):
         """
         Fit line/sample jitter polynomial coefficients from real per-line
-        SPICE attitude.
+        SPICE position *and* attitude.
 
-        Physical model: at each sampled line i, compute the true camera
-        boresight direction in an inertial frame (J2000) using the real
-        attitude at et_line(i), then express that direction in the
-        *reference* camera frame (the one the frame model actually uses,
-        anchored at center_ephemeris_time) by composing with the inverse of
-        the reference attitude. For a camera whose pointing barely changes
-        during one frame's readout (true for JANUS in typical, non-flyby
-        observations -- see JuicePds4LabelNaifSpiceDriverPush's docstring
-        for the empirical numbers), this deviation is small and this
-        linearised pixel-space treatment is an excellent approximation;
-        J2000 is used only as a common intermediate frame (any inertial or
-        body frame would cancel identically) so this needs no target-body
-        frame resolution. Position drift during the frame is not modeled
-        here (usgscsm's FRAME model has no per-line position table to
-        correct -- only pixel-space line/sample jitter); for JANUS this is
-        the smaller of the two effects (see the same docstring).
+        Earlier revision (attitude-only, no reference ground point) was
+        found to be insufficient: on a close lunar flyby, spacecraft
+        position change during one frame's rolling-shutter readout can
+        dominate over attitude change and produce large apparent geometric
+        distortion (observed: ~15% frame compression) -- pure boresight
+        rotation cannot capture that; it takes an actual displaced
+        observer looking at a fixed ground point.
 
-        The resulting deviation, projected through the focal length /
-        pixel size onto the focal plane, gives a pixel-space (line, sample)
-        offset at each sampled time. A polynomial with no constant term
-        (matching usgscsm's removeJitter/addJitter convention) is then
-        least-squares fit against the normalized line_times -- the
-        reference time (t=0, the center line) has zero jitter by
-        construction, consistent with dropping the constant term.
+        Physical model: intersect the camera boresight ray at
+        center_ephemeris_time with a sphere of the target body's mean
+        radius to get a fixed reference ground point G (body-fixed frame).
+        Then, for each sampled line i, compute where G would appear in the
+        *reference* camera frame (anchored at center_ephemeris_time) if the
+        spacecraft's real position and attitude at et_line(i) were used
+        instead of the reference ones:
+
+            vec_i        = G - sc_position(et_line_i)          [body-fixed]
+            vec_camera_i = R(et_line_i)^T @ vec_i               [camera frame at line i]
+            ... reprojected through the *reference* pointing (R_center)
+            by definition of "what pixel would this ray hit if the model
+            only knew about the reference attitude/position" --
+            camera-frame ray direction is what matters, so this is just
+            vec_camera_i normalized and projected through the pinhole
+            formula directly (no separate re-composition with R_center is
+            needed here, unlike the attitude-only case, because G is fixed
+            in body-fixed space, not camera space).
+
+        This captures both attitude *and* position drift's combined effect
+        on a fixed ground point's apparent pixel location -- the same
+        physics janus_projector's own rolling-shutter pipeline uses for
+        per-pixel backprojection (see docs/janus_camera_model.md in
+        projector.git), just reduced here to a low-order polynomial for
+        usgscsm's jitter mechanism. A held-out validation set (n_validate
+        points, disjoint from the n_fit fit points) is used to report the
+        polynomial fit's own residual, since a poor fit would silently produce
+        wrong geometry -- see the module-level get_jitter_fit_diagnostics
+        helper to inspect this without constructing a full driver.
+
+        A polynomial with no constant term (matching usgscsm's
+        removeJitter/addJitter convention) is least-squares fit against the
+        normalized line_times -- the reference time (t=0, the center line)
+        is exact by construction (G was defined from the center-time
+        boresight), consistent with dropping the constant term.
 
         Parameters
         ----------
         degree : int
-            Highest polynomial order (no constant term), e.g. 2 fits
-            coefficients for t^2 and t^1.
+            Highest polynomial order (no constant term), e.g. 3 fits
+            coefficients for t^3, t^2, t^1.
+        n_fit : int
+            Number of lines sampled to fit the polynomial.
+        n_validate : int
+            Number of additional, disjoint lines sampled to compute a
+            held-out residual (see fit_residual_px on the returned dict).
 
         Returns
         -------
-        : (list<float>, list<float>)
-          (line_jitter_coeffs, sample_jitter_coeffs), highest order first.
+        : (list<float>, list<float>, dict)
+          (line_jitter_coeffs, sample_jitter_coeffs, diagnostics) --
+          diagnostics has keys 'fit_rms_px', 'fit_max_px', 'validate_rms_px',
+          'validate_max_px'.
         """
         n_lines = self.image_lines
-        n_samples_fit = min(41, n_lines)
-        sample_lines = np.linspace(0, n_lines - 1, n_samples_fit)
-        sample_times = -1.0 + 2.0 * sample_lines / (n_lines - 1)
-
         focal_length_mm = self.focal_length
         pixel_size_mm = spice.gdpool("INS{}_PIXEL_SIZE".format(self.ikid), 0, 1)[0] * 1e-3
-
+        body_frame = self.reference_frame
+        target = self.target_name
+        sc = self.spacecraft_name
+        abcorr = self.light_time_correction
         center_et = self.center_ephemeris_time
-        r_center = np.array(spice.pxform("JUICE_JANUS", "J2000", center_et))
 
-        d_line = np.zeros(n_samples_fit)
-        d_sample = np.zeros(n_samples_fit)
-        for k, line in enumerate(sample_lines):
+        radii = spice.bodvrd(target, "RADII", 3)[1]
+        mean_radius = float(np.mean(radii))
+
+        r_center = np.array(spice.pxform("JUICE_JANUS", body_frame, center_et))
+        pos_center, _ = spice.spkpos(sc, center_et, body_frame, abcorr, target)
+        pos_center = np.array(pos_center)
+
+        boresight_center = r_center @ np.array([0.0, 0.0, 1.0])
+        # Ray-sphere intersection (nearest root) from pos_center along boresight_center.
+        b = np.dot(pos_center, boresight_center)
+        c = np.dot(pos_center, pos_center) - mean_radius ** 2
+        disc = b * b - c
+        if disc < 0:
+            raise ValueError(
+                "JANUS boresight at center_ephemeris_time does not intersect "
+                f"the target body ({target}) -- cannot derive a reference "
+                "ground point for the rolling-shutter jitter fit."
+            )
+        t_hit = -b - math.sqrt(disc)
+        ground_point = pos_center + t_hit * boresight_center
+
+        def _pixel_delta(line):
             et = self.ephemeris_start_time + line * self.interframe_delay
-            r = np.array(spice.pxform("JUICE_JANUS", "J2000", et))
-            d_world = r @ np.array([0.0, 0.0, 1.0])  # camera +Z = boresight
-            d_ref = r_center.T @ d_world
-            d_line[k] = focal_length_mm * (d_ref[0] / d_ref[2]) / pixel_size_mm
-            d_sample[k] = focal_length_mm * (d_ref[1] / d_ref[2]) / pixel_size_mm
+            r = np.array(spice.pxform("JUICE_JANUS", body_frame, et))
+            pos, _ = spice.spkpos(sc, et, body_frame, abcorr, target)
+            vec_body = ground_point - np.array(pos)
+            vec_camera = r.T @ vec_body
+            d_line = focal_length_mm * (vec_camera[0] / vec_camera[2]) / pixel_size_mm
+            d_sample = focal_length_mm * (vec_camera[1] / vec_camera[2]) / pixel_size_mm
+            return d_line, d_sample
 
-        # Design matrix for [t^degree, ..., t^1] -- no constant column.
-        basis = np.vstack([sample_times ** p for p in range(degree, 0, -1)]).T
+        def _basis(times):
+            return np.vstack([times ** p for p in range(degree, 0, -1)]).T
+
+        fit_lines = np.linspace(0, n_lines - 1, n_fit)
+        fit_times = -1.0 + 2.0 * fit_lines / (n_lines - 1)
+        d_line = np.zeros(n_fit)
+        d_sample = np.zeros(n_fit)
+        for k, line in enumerate(fit_lines):
+            d_line[k], d_sample[k] = _pixel_delta(line)
+
+        basis = _basis(fit_times)
         line_coeffs, *_ = np.linalg.lstsq(basis, d_line, rcond=None)
         sample_coeffs, *_ = np.linalg.lstsq(basis, d_sample, rcond=None)
-        return line_coeffs.tolist(), sample_coeffs.tolist()
+
+        fit_resid = np.hypot(basis @ line_coeffs - d_line, basis @ sample_coeffs - d_sample)
+
+        # Held-out lines, offset from the fit grid so none coincide.
+        val_lines = np.linspace(0.5, n_lines - 1.5, n_validate)
+        val_times = -1.0 + 2.0 * val_lines / (n_lines - 1)
+        dv_line = np.zeros(n_validate)
+        dv_sample = np.zeros(n_validate)
+        for k, line in enumerate(val_lines):
+            dv_line[k], dv_sample[k] = _pixel_delta(line)
+        val_basis = _basis(val_times)
+        val_resid = np.hypot(
+            val_basis @ line_coeffs - dv_line, val_basis @ sample_coeffs - dv_sample
+        )
+
+        diagnostics = {
+            "fit_rms_px": float(np.sqrt(np.mean(fit_resid ** 2))),
+            "fit_max_px": float(fit_resid.max()),
+            "validate_rms_px": float(np.sqrt(np.mean(val_resid ** 2))),
+            "validate_max_px": float(val_resid.max()),
+        }
+        return line_coeffs.tolist(), sample_coeffs.tolist(), diagnostics
+
+    @property
+    def jitter_fit_diagnostics(self):
+        """
+        Held-out residual (px) of the jitter polynomial fit against the
+        real per-line ground-point reprojection it's fit to -- see
+        _jitter_fit_coeffs. A large residual means the polynomial degree
+        is too low to represent this observation's actual motion (e.g. a
+        fast, close flyby) and the jitter correction will be inaccurate
+        even though the ISD will still construct without error.
+
+        Returns
+        -------
+        : dict
+          keys: fit_rms_px, fit_max_px, validate_rms_px, validate_max_px
+        """
+        if not hasattr(self, "_jitter_coeffs"):
+            self._jitter_coeffs = self._jitter_fit_coeffs()
+        return self._jitter_coeffs[2]
 
     @property
     def line_jitter_coeffs(self):
