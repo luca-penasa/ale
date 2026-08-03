@@ -4,7 +4,7 @@ import os
 import json
 import logging
 
-from ale.base.type_sensor import LineScanner, Framer, Radar, PushFrame
+from ale.base.type_sensor import LineScanner, Framer, Radar, PushFrame, RollingShutter
 from ale import logger
 
 def to_isd(driver):
@@ -58,6 +58,18 @@ def to_isd(driver):
     if isinstance(driver, Framer):
         isd['name_model'] = 'USGS_ASTRO_FRAME_SENSOR_MODEL'
         isd['center_ephemeris_time'] = driver_data["center_ephemeris_time"]
+
+    # optional rolling-shutter jitter correction, layered on top of the
+    # frame sensor model's normal (full 2D, per-pixel) geometry -- see
+    # UsgsAstroFrameSensorModel::{add,remove}Jitter in usgscsm. Field names
+    # here must match what usgscsm's constructStateFromIsd expects under
+    # the "jitter" key.
+    if isinstance(driver, RollingShutter):
+        isd['jitter'] = {
+            'lineJitterCoefficients': driver_data["line_jitter_coeffs"],
+            'sampleJitterCoefficients': driver_data["sample_jitter_coeffs"],
+            'lineExposureTimes': driver_data["line_times"],
+        }
 
     if isinstance(driver, PushFrame):
         isd['name_model'] = 'USGS_ASTRO_PUSH_FRAME_SENSOR_MODEL'
