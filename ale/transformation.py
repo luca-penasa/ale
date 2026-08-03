@@ -6,6 +6,7 @@ import networkx as nx
 from networkx.algorithms.shortest_paths.generic import shortest_path
 
 import pyspiceql
+import spiceypy as spice
 
 from ale.rotation import ConstantRotation, TimeDependentRotation
 from ale import util

@@ -24,12 +24,14 @@ class Pds4Label:
         """
         if not hasattr(self, "_label"):
             try:
-                with open(self._file, "r") as file:
+                # Read as bytes: lxml.etree.fromstring rejects a Python str
+                # input when the XML has an encoding declaration (it needs
+                # to decode using that declared encoding itself), which
+                # every PDS4 label does.
+                with open(self._file, "rb") as file:
                     self._label: etree.Element = etree.fromstring(file.read())
-            except Exception:
-                self._label: etree.Element = etree.fromstring(self._file)
-            except:
-                raise ValueError("{} is not a valid label".format(self._file))
+            except Exception as e:
+                raise ValueError("{} is not a valid label".format(self._file)) from e
 
             self._ns = {  # shall we read these straight from the xml header?? Guess so.
                 "pds": "http://pds.nasa.gov/pds4/pds/v1",

@@ -39,6 +39,7 @@ spiceql_mission_map = {
     "HAYABUSA_AMICA": "amica",
     "HAYABUSA_NIRS": "nirs",
     "HAYABUSA2_ONC-W2": "onc",
+    "JUICE_JANUS": "juice",
     "JUNO_JUNOCAM": "juno",
     "LRO_LROCNACL": "lroc",
     "LRO_LROCNACR": "lroc",
