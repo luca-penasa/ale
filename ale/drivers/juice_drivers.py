@@ -74,8 +74,21 @@ class JuicePds4LabelNaifSpiceDriver(Framer, Pds4Label, NaifSpice, NoDistortion, 
         -------
         : float
           Detector sample of the principal point
+
+        Notes
+        -----
+        The IK's INS<id>_CCD_CENTER is 1-based; usgscsm's detector_center
+        (m_detectorLineOrigin/m_detectorSampleOrigin) is used directly as
+        the pixel-space origin with no implicit offset, and CSM's own pixel
+        convention has the upper-left pixel's centre at (0.5, 0.5) -- i.e.
+        0-based. Subtract 1 to convert, matching
+        janus_projector.janus.janus_from_spice (projector.git), which
+        already does this and is validated against real flight data.
+        Confirmed empirically: using the raw 1-based value here produced
+        exactly a 1-pixel-scale systematic offset against projector's
+        independently validated geolocation.
         """
-        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[0])
+        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[0]) - 1.0
 
     @property
     def detector_center_line(self):
@@ -84,8 +97,12 @@ class JuicePds4LabelNaifSpiceDriver(Framer, Pds4Label, NaifSpice, NoDistortion, 
         -------
         : float
           Detector line of the principal point
+
+        Notes
+        -----
+        See detector_center_sample -- same 1-based-to-0-based correction.
         """
-        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[1])
+        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[1]) - 1.0
 
     @property
     def focal2pixel_lines(self):
@@ -315,8 +332,21 @@ class JuicePds4LabelNaifSpiceDriverPush(PushFrame, Pds4Label, NaifSpice, NoDisto
         -------
         : float
           Detector sample of the principal point
+
+        Notes
+        -----
+        The IK's INS<id>_CCD_CENTER is 1-based; usgscsm's detector_center
+        (m_detectorLineOrigin/m_detectorSampleOrigin) is used directly as
+        the pixel-space origin with no implicit offset, and CSM's own pixel
+        convention has the upper-left pixel's centre at (0.5, 0.5) -- i.e.
+        0-based. Subtract 1 to convert, matching
+        janus_projector.janus.janus_from_spice (projector.git), which
+        already does this and is validated against real flight data.
+        Confirmed empirically: using the raw 1-based value here produced
+        exactly a 1-pixel-scale systematic offset against projector's
+        independently validated geolocation.
         """
-        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[0])
+        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[0]) - 1.0
 
     @property
     def detector_center_line(self):
@@ -325,8 +355,12 @@ class JuicePds4LabelNaifSpiceDriverPush(PushFrame, Pds4Label, NaifSpice, NoDisto
         -------
         : float
           Detector line of the principal point
+
+        Notes
+        -----
+        See detector_center_sample -- same 1-based-to-0-based correction.
         """
-        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[1])
+        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[1]) - 1.0
 
     @property
     def focal2pixel_lines(self):
@@ -451,8 +485,21 @@ class JuicePds4LabelNaifSpiceDriverRollingShutter(RollingShutter, Framer, Pds4La
         -------
         : float
           Detector sample of the principal point
+
+        Notes
+        -----
+        The IK's INS<id>_CCD_CENTER is 1-based; usgscsm's detector_center
+        (m_detectorLineOrigin/m_detectorSampleOrigin) is used directly as
+        the pixel-space origin with no implicit offset, and CSM's own pixel
+        convention has the upper-left pixel's centre at (0.5, 0.5) -- i.e.
+        0-based. Subtract 1 to convert, matching
+        janus_projector.janus.janus_from_spice (projector.git), which
+        already does this and is validated against real flight data.
+        Confirmed empirically: using the raw 1-based value here produced
+        exactly a 1-pixel-scale systematic offset against projector's
+        independently validated geolocation.
         """
-        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[0])
+        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[0]) - 1.0
 
     @property
     def detector_center_line(self):
@@ -461,8 +508,12 @@ class JuicePds4LabelNaifSpiceDriverRollingShutter(RollingShutter, Framer, Pds4La
         -------
         : float
           Detector line of the principal point
+
+        Notes
+        -----
+        See detector_center_sample -- same 1-based-to-0-based correction.
         """
-        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[1])
+        return float(spice.gdpool("INS{}_CCD_CENTER".format(self.ikid), 0, 2)[1]) - 1.0
 
     @property
     def focal2pixel_lines(self):
