@@ -1,10 +1,12 @@
 from networkx.algorithms.shortest_paths.generic import shortest_path
+from scipy.spatial.transform import Rotation
 
 import os
 import json
 import logging
 
 from ale.base.type_sensor import LineScanner, Framer, Radar, PushFrame, RollingShutter
+from ale.rotation import TimeDependentRotation
 from ale import logger
 
 def to_isd(driver):
@@ -128,7 +130,20 @@ def to_isd(driver):
         # (destination, intermediate, ..., intermediate, source)
         body_rotation['constant_frames'] = shortest_path(frame_chain, target_frame, source_frame)
         constant_rotation = frame_chain.compute_rotation(source_frame, target_frame)
-        body_rotation['constant_rotation'] = constant_rotation.rotation_matrix().flatten()
+        if isinstance(constant_rotation, TimeDependentRotation):
+            # Some frame associations (e.g. a body-fixed frame defined
+            # relative to a slowly-precessing pole, like MOON_ME's
+            # association with MOON_PA) are technically time-dependent
+            # rather than truly constant, so compute_rotation can return a
+            # TimeDependentRotation here instead of a ConstantRotation.
+            # Over one image's short acquisition span the variation is
+            # negligible, so approximate with the rotation at the first
+            # available sample -- consistent with treating this segment as
+            # "constant" for the whole image in the first place.
+            constant_matrix = Rotation.from_quat(constant_rotation.quats[0]).as_matrix()
+        else:
+            constant_matrix = constant_rotation.rotation_matrix()
+        body_rotation['constant_rotation'] = constant_matrix.flatten()
 
     body_rotation["reference_frame"] = destination_frame
     isd['body_rotation'] = body_rotation

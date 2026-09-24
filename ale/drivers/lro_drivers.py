@@ -94,8 +94,19 @@ class LroLrocNacPds3LabelNaifSpiceDriver(LineScanner, NaifSpice, Pds3Label, Driv
         -------
         : list
           Radial distortion coefficients. There is only one coefficient for LROC NAC l/r
+
+        Notes
+        -----
+        naif_keywords returns a bare scalar (not a 1-element list) for a
+        single-valued IK keyword like INS<id>_OD_K here, but usgscsm's ISD
+        parser (Utilities.cpp, DistortionType::LROLROCNAC) requires
+        optical_distortion.lrolrocnac.coefficients to be a JSON array --
+        wrap in a list if needed.
         """
-        return self.naif_keywords['INS{}_OD_K'.format(self.ikid)]
+        val = self.naif_keywords['INS{}_OD_K'.format(self.ikid)]
+        if not isinstance(val, (list, tuple)):
+            val = [val]
+        return val
 
     @property
     def light_time_correction(self):
@@ -350,8 +361,19 @@ class LroLrocNacIsisLabelNaifSpiceDriver(LineScanner, NaifSpice, IsisLabel, Driv
         -------
         : list
           Radial distortion coefficients. There is only one coefficient for LROC NAC l/r
+
+        Notes
+        -----
+        naif_keywords returns a bare scalar (not a 1-element list) for a
+        single-valued IK keyword like INS<id>_OD_K here, but usgscsm's ISD
+        parser (Utilities.cpp, DistortionType::LROLROCNAC) requires
+        optical_distortion.lrolrocnac.coefficients to be a JSON array --
+        wrap in a list if needed.
         """
-        return self.naif_keywords['INS{}_OD_K'.format(self.ikid)]
+        val = self.naif_keywords['INS{}_OD_K'.format(self.ikid)]
+        if not isinstance(val, (list, tuple)):
+            val = [val]
+        return val
 
     @property
     def light_time_correction(self):
